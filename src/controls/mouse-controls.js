@@ -7,6 +7,7 @@ module.exports = {
   schema: {
     enabled: { default: true },
     pointerlockEnabled: { default: true },
+    lockAxis: { default: 'none' },
     sensitivity: { default: 1 / 25 }
   },
 
@@ -84,6 +85,12 @@ module.exports = {
    */
   getRotationDelta: function () {
     var dRotation = this.lookVector.clone().multiplyScalar(this.data.sensitivity);
+    if(this.data.lockAxis === 'x'){
+      dRotation.setX(0);
+    }
+    if(this.data.lockAxis === 'y'){
+      dRotation.setY(0);
+    }
     this.lookVector.set(0, 0);
     return dRotation;
   },

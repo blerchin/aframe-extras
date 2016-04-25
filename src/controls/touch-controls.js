@@ -1,6 +1,7 @@
 module.exports = {
   schema: {
     enabled: { default: true },
+    lockAxis: { default: 'none' },
     sensitivity: { default: 1 / 25 }
   },
 
@@ -68,6 +69,12 @@ module.exports = {
   
   getRotationDelta: function() {
     var dRotation = this.lookVector.clone().multiplyScalar(this.data.sensitivity);
+    if(this.data.lockAxis === 'x'){
+      dRotation.setX(0);
+    }
+    if(this.data.lockAxis === 'y'){
+      dRotation.setY(0);
+    }
     this.lookVector.set(0, 0);
     return dRotation;
   },
@@ -75,13 +82,15 @@ module.exports = {
   onTouchMove: function() {
     var previousTouchEvent = this.previousTouchEvent;
 
-    if (!this.data.enabled || !(this.isMoving || this.pointerLocked)) {
+    if (!this.data.enabled || !this.isMoving) {
       return;
     }
 
+    var e = event.touches[0];
+    var pe = previousTouchEvent.touches[0];
 
-    var movementY = event.screenY - previousTouchEvent.screenY;
-    var movementX = event.screenX - previousTouchEvent.screenX;
+    var movementY = e.screenY - pe.screenY;
+    var movementX = e.screenX - pe.screenX;
 
     this.lookVector.x += movementX;
     this.lookVector.y += movementY;
