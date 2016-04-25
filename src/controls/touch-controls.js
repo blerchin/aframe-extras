@@ -45,6 +45,10 @@ module.exports = {
   isVelocityActive: function () {
     return this.data.enabled && this.isMoving;
   },
+  
+  isRotationActive: function () {
+    return this.data.enabled && this.isMoving;
+  },
 
   getVelocityDelta: function () {
     this.dVelocity.z = this.isMoving ? -1 : 0;
