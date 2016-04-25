@@ -79,7 +79,7 @@ module.exports = {
     return dRotation;
   },
   
-  onTouchMove: function() {
+  onTouchMove: function(event) {
     var previousTouchEvent = this.previousTouchEvent;
 
     if (!this.data.enabled || !this.isMoving) {
