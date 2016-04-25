@@ -66,7 +66,7 @@ module.exports = {
     return this.dVelocity.clone();
   },
   
-  getRotationData: function() {
+  getRotationDelta: function() {
     var dRotation = this.lookVector.clone().multiplyScalar(this.data.sensitivity);
     this.lookVector.set(0, 0);
     return dRotation;
