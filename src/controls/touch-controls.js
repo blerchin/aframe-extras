@@ -80,13 +80,13 @@ module.exports = {
     }
 
 
-    var movementY = event.screenY - previousMouseEvent.screenY;
-    var movementX = event.screenX - previousMouseEvent.screenX;
+    var movementY = event.screenY - previousTouchEvent.screenY;
+    var movementX = event.screenX - previousTouchEvent.screenX;
 
     this.lookVector.x += movementX;
     this.lookVector.y += movementY;
 
-    this.previousMouseEvent = event;
+    this.previousTouchEvent = event;
   },
 
 
