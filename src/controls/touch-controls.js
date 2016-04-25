@@ -80,29 +80,35 @@ module.exports = {
   },
   
   onTouchMove: function(event) {
-    var previousTouchEvent = this.previousTouchEvent;
 
     if (!this.data.enabled || !this.isMoving) {
       return;
     }
 
     var e = event.touches[0];
-    var pe = previousTouchEvent.touches[0];
+    var pe = this.previousTouch;
 
     var movementY = e.screenY - pe.screenY;
     var movementX = e.screenX - pe.screenX;
 
+    this.previousTouch = {
+      screenX: event.touches[0].screenX,
+      screenY: event.touches[0].screenY
+    };
+
     this.lookVector.x += movementX;
     this.lookVector.y += movementY;
-
-    this.previousTouchEvent = event;
   },
 
 
 
   onTouchStart: function (e) {
+    console.log('onTouchStart')
     this.isMoving = true;
-    this.previousTouchEvent = event;
+    this.previousTouch = {
+      screenX: e.touches[0].screenX,
+      screenY: e.touches[0].screenY
+    };
 
     e.preventDefault();
   },
