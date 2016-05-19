@@ -1,6 +1,6 @@
 (function e(t,n,r){function s(o,u){if(!n[o]){if(!t[o]){var a=typeof require=="function"&&require;if(!u&&a)return a(o,!0);if(i)return i(o,!0);var f=new Error("Cannot find module '"+o+"'");throw f.code="MODULE_NOT_FOUND",f}var l=n[o]={exports:{}};t[o][0].call(l.exports,function(e){var n=t[o][1][e];return s(n?n:e)},l,l.exports,e,t,n,r)}return n[o].exports}var i=typeof require=="function"&&require;for(var o=0;o<r.length;o++)s(r[o]);return s})({1:[function(require,module,exports){
 require('./src/controls').registerAll();
-},{"./src/controls":8}],2:[function(require,module,exports){
+},{"./src/controls":9}],2:[function(require,module,exports){
 module.exports = Object.assign(function GamepadButton () {}, {
 	FACE_1: 0,
 	FACE_2: 1,
@@ -767,6 +767,123 @@ module.exports = GamepadButtonEvent;
 } (window));
 
 },{}],5:[function(require,module,exports){
+module.exports = {
+  schema: {
+    enabled: {
+      default: true
+    },
+    rotationSensitivity: {
+      default: 0.35
+    }
+  },
+
+  init: function() {
+    this.dVelocity = new THREE.Vector3();
+    this.lookVector = new THREE.Vector2();
+    this.rotationCur = new THREE.Vector3();
+    this.rotationDest = new THREE.Vector3();
+    this.rotationSpeed = 1;
+    this.bindMethods();
+    console.log(this.data.rotationSensitivity);
+  },
+
+  play: function() {
+    this.addEventListeners();
+  },
+
+  pause: function() {
+    this.removeEventListeners();
+    this.dVelocity.set(0, 0, 0);
+    this.lookVector.set(0, 0);
+  },
+
+  remove: function() {
+    this.pause();
+  },
+
+  bindMethods: function() {
+    this.rotate = this.rotate.bind(this);
+    this.rotateTo = this.rotateTo.bind(this);
+  },
+
+  addEventListeners: function() {
+    if (!window.g) {
+      window.g = {};
+    }
+    var self = this;
+    window.g.aframeControls = {
+      rotate: function(x, y, speed) {
+        self.rotate(x, y, speed);
+      },
+      rotateTo: function(x, y, speed){
+        console.warn("This is experimental!!! Don't assume it works.")
+        self.rotateTo(x, y, speed);
+      }
+    }
+  },
+
+  removeEventListeners: function() {
+    window.g.aframeControls = null;
+  },
+
+  isVelocityActive: function() {
+    return this.data.enabled && this.isMoving;
+  },
+
+  isRotationActive: function() {
+    return this.data.enabled && this.isMoving;
+  },
+
+  getVelocityDelta: function() {
+    this.dVelocity.z = this.isMoving ? -1 : 0;
+    return this.dVelocity.clone();
+  },
+
+  getRotationDelta: function(dt) {
+    this.lookVector.set(0, 0);
+    if (Math.abs(this.rotationCur.x - this.rotationDest.x) > this.rotationSpeed) {
+      var direction = this.rotationCur.x < this.rotationDest.x ? 1 : -
+        1;
+      var inc = direction * this.rotationSpeed
+      this.rotationCur.x += inc;
+      this.lookVector.x = inc;
+    }
+
+    if (Math.abs( this.rotationCur.y - this.rotationDest.y ) > this.rotationSpeed) {
+      var direction = this.rotationCur.y < this.rotationDest.y ? 1 : -1;
+      var inc = direction * this.rotationSpeed
+      this.rotationCur.y += inc;
+      this.lookVector.y = inc;
+    }
+    if (this.lookVector.x === 0 && this.lookVector.y === 0) {
+      this.isMoving = false;
+      this.rotationCur.set(0,0);
+      this.rotationDest.set(0,0);
+    }
+    this.dVelocity = this.lookVector.clone().multiplyScalar(this.data.rotationSensitivity);
+
+    return this.dVelocity;
+  },
+
+  setRotationDest: function(x, y, speed) {
+    this.isMoving = true;
+    this.rotationCur.set(0, 0);
+    this.rotationDest.set(x, y);
+    this.rotationSpeed = speed || this.rotationSpeed;
+  },
+
+  rotate: function(x, y, speed) {
+    this.setRotationDest(x, y, speed);
+  },
+  rotateTo: function(x, y, speed) {
+    var cur = this.el.getAttribute('rotation') || {x: 0, y:0, z: 0};
+    //dom rotation uses y=yaw x=pitch
+    this.setRotationDest(x - cur.y, y - cur.x, speed);
+  }
+
+};
+
+},{}],6:[function(require,module,exports){
 var EPS = 0.1;
 
 module.exports = {
@@ -832,7 +949,7 @@ module.exports = {
   }
 };
 
-},{}],6:[function(require,module,exports){
+},{}],7:[function(require,module,exports){
 /**
  * Gamepad controls for A-Frame.
  *
@@ -1088,7 +1205,7 @@ module.exports = {
   }
 };
 
-},{"../../lib/GamepadButton":2,"../../lib/GamepadButtonEvent":3}],7:[function(require,module,exports){
+},{"../../lib/GamepadButton":2,"../../lib/GamepadButtonEvent":3}],8:[function(require,module,exports){
 var TICK_DEBOUNCE = 4; // ms
 
 module.exports = {
@@ -1175,7 +1292,7 @@ module.exports = {
   }
 };
 
-},{}],8:[function(require,module,exports){
+},{}],9:[function(require,module,exports){
 var math = require('../math');
 
 module.exports = {
@@ -1186,6 +1303,7 @@ module.exports = {
   'mouse-controls':      require('./mouse-controls'),
   'touch-controls':      require('./touch-controls'),
   'universal-controls':  require('./universal-controls'),
+  'api-controls':        require('./api-controls'),
 
   registerAll: function (AFRAME) {
     if (this._registered) return;
@@ -1200,13 +1318,14 @@ module.exports = {
     if (!AFRAME.components['keyboard-controls'])    AFRAME.registerComponent('keyboard-controls',   this['keyboard-controls']);
     if (!AFRAME.components['mouse-controls'])       AFRAME.registerComponent('mouse-controls',      this['mouse-controls']);
     if (!AFRAME.components['touch-controls'])       AFRAME.registerComponent('touch-controls',      this['touch-controls']);
+    if (!AFRAME.components['api-controls'])   AFRAME.registerComponent('api-controls',  this['api-controls']);
     if (!AFRAME.components['universal-controls'])   AFRAME.registerComponent('universal-controls',  this['universal-controls']);
 
     this._registered = true;
   }
 };
 
-},{"../math":13,"./checkpoint-controls":5,"./gamepad-controls":6,"./hmd-controls":7,"./keyboard-controls":9,"./mouse-controls":10,"./touch-controls":11,"./universal-controls":12}],9:[function(require,module,exports){
+},{"../math":14,"./api-controls":5,"./checkpoint-controls":6,"./gamepad-controls":7,"./hmd-controls":8,"./keyboard-controls":10,"./mouse-controls":11,"./touch-controls":12,"./universal-controls":13}],10:[function(require,module,exports){
 require('../../lib/keyboard.polyfill');
 
 var MAX_DELTA = 0.2,
@@ -1357,7 +1476,7 @@ module.exports = {
 
 };
 
-},{"../../lib/keyboard.polyfill":4}],10:[function(require,module,exports){
+},{"../../lib/keyboard.polyfill":4}],11:[function(require,module,exports){
 /**
  * Mouse + Pointerlock controls.
  *
@@ -1367,6 +1486,7 @@ module.exports = {
   schema: {
     enabled: { default: true },
     pointerlockEnabled: { default: true },
+    lockAxis: { default: 'none' },
     sensitivity: { default: 1 / 25 }
   },
 
@@ -1444,6 +1564,12 @@ module.exports = {
    */
   getRotationDelta: function () {
     var dRotation = this.lookVector.clone().multiplyScalar(this.data.sensitivity);
+    if(this.data.lockAxis === 'x'){
+      dRotation.setX(0);
+    }
+    if(this.data.lockAxis === 'y'){
+      dRotation.setY(0);
+    }
     this.lookVector.set(0, 0);
     return dRotation;
   },
@@ -1497,14 +1623,17 @@ module.exports = {
   }
 };
 
-},{}],11:[function(require,module,exports){
+},{}],12:[function(require,module,exports){
 module.exports = {
   schema: {
-    enabled: { default: true }
+    enabled: { default: true },
+    lockAxis: { default: 'none' },
+    sensitivity: { default: 1 / 25 }
   },
 
   init: function () {
     this.dVelocity = new THREE.Vector3();
+    this.lookVector = new THREE.Vector2();
     this.bindMethods();
   },
 
@@ -1515,6 +1644,7 @@ module.exports = {
   pause: function () {
     this.removeEventListeners();
     this.dVelocity.set(0, 0, 0);
+    this.lookVector.set(0, 0);
   },
 
   remove: function () {
@@ -1531,6 +1661,7 @@ module.exports = {
     }
 
     canvasEl.addEventListener('touchstart', this.onTouchStart);
+    canvasEl.addEventListener('touchmove', this.onTouchMove);
     canvasEl.addEventListener('touchend', this.onTouchEnd);
   },
 
@@ -1539,10 +1670,21 @@ module.exports = {
     if (!canvasEl) { return; }
 
     canvasEl.removeEventListener('touchstart', this.onTouchStart);
+    canvasEl.removeEventListener('touchmove', this.onTouchStart)
     canvasEl.removeEventListener('touchend', this.onTouchEnd);
   },
-
+  
+  bindMethods: function () {
+    this.onTouchStart = this.onTouchStart.bind(this);
+    this.onTouchEnd = this.onTouchEnd.bind(this);
+    this.onTouchMove = this.onTouchMove.bind(this);
+  },
+  
   isVelocityActive: function () {
+    return this.data.enabled && this.isMoving;
+  },
+  
+  isRotationActive: function () {
     return this.data.enabled && this.isMoving;
   },
 
@@ -1550,14 +1692,50 @@ module.exports = {
     this.dVelocity.z = this.isMoving ? -1 : 0;
     return this.dVelocity.clone();
   },
+  
+  getRotationDelta: function() {
+    var dRotation = this.lookVector.clone().multiplyScalar(this.data.sensitivity);
+    if(this.data.lockAxis === 'x'){
+      dRotation.setX(0);
+    }
+    if(this.data.lockAxis === 'y'){
+      dRotation.setY(0);
+    }
+    this.lookVector.set(0, 0);
+    return dRotation;
+  },
+  
+  onTouchMove: function(event) {
 
-  bindMethods: function () {
-    this.onTouchStart = this.onTouchStart.bind(this);
-    this.onTouchEnd = this.onTouchEnd.bind(this);
+    if (!this.data.enabled || !this.isMoving) {
+      return;
+    }
+
+    var e = event.touches[0];
+    var pe = this.previousTouch;
+
+    var movementY = e.screenY - pe.screenY;
+    var movementX = e.screenX - pe.screenX;
+
+    this.previousTouch = {
+      screenX: event.touches[0].screenX,
+      screenY: event.touches[0].screenY
+    };
+
+    this.lookVector.x += movementX;
+    this.lookVector.y += movementY;
   },
 
+
+
   onTouchStart: function (e) {
+    console.log('onTouchStart')
     this.isMoving = true;
+    this.previousTouch = {
+      screenX: e.touches[0].screenX,
+      screenY: e.touches[0].screenY
+    };
+
     e.preventDefault();
   },
 
@@ -1567,7 +1745,7 @@ module.exports = {
   }
 };
 
-},{}],12:[function(require,module,exports){
+},{}],13:[function(require,module,exports){
 /**
  * Universal Controls
  *
@@ -1591,7 +1769,7 @@ module.exports = {
     movementEnabled:      { default: true },
     movementControls:     { default: ['gamepad', 'keyboard', 'touch'] },
     rotationEnabled:      { default: true },
-    rotationControls:     { default: ['hmd', 'gamepad', 'mouse'] },
+    rotationControls:     { default: ['hmd', 'gamepad', 'mouse', 'api'] },
     movementSpeed:        { default: 5 }, // m/s
     movementEasing:       { default: 15 }, // m/s2
     movementAcceleration: { default: 80 }, // m/s2
@@ -1754,7 +1932,7 @@ module.exports = {
   }
 };
 
-},{}],13:[function(require,module,exports){
+},{}],14:[function(require,module,exports){
 module.exports = {
   'velocity':   require('./velocity'),
   'quaternion': require('./quaternion'),
@@ -1771,7 +1949,7 @@ module.exports = {
   }
 };
 
-},{"./quaternion":14,"./velocity":15}],14:[function(require,module,exports){
+},{"./quaternion":15,"./velocity":16}],15:[function(require,module,exports){
 /**
  * Quaternion.
  *
@@ -1788,7 +1966,7 @@ module.exports = {
   }
 };
 
-},{}],15:[function(require,module,exports){
+},{}],16:[function(require,module,exports){
 /**
  * Velocity, in m/s.
  */

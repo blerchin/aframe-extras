@@ -8,6 +8,7 @@ module.exports = {
   'mouse-controls':      require('./mouse-controls'),
   'touch-controls':      require('./touch-controls'),
   'universal-controls':  require('./universal-controls'),
+  'api-controls':        require('./api-controls'),
 
   registerAll: function (AFRAME) {
     if (this._registered) return;
@@ -22,6 +23,7 @@ module.exports = {
     if (!AFRAME.components['keyboard-controls'])    AFRAME.registerComponent('keyboard-controls',   this['keyboard-controls']);
     if (!AFRAME.components['mouse-controls'])       AFRAME.registerComponent('mouse-controls',      this['mouse-controls']);
     if (!AFRAME.components['touch-controls'])       AFRAME.registerComponent('touch-controls',      this['touch-controls']);
+    if (!AFRAME.components['api-controls'])   AFRAME.registerComponent('api-controls',  this['api-controls']);
     if (!AFRAME.components['universal-controls'])   AFRAME.registerComponent('universal-controls',  this['universal-controls']);
 
     this._registered = true;
