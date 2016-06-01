@@ -1837,7 +1837,7 @@ module.exports = {
     if (this.data.movementEnabled && dt / 1000 > MAX_DELTA) {
       this.velocity.set(0, 0, 0);
       this.el.setAttribute('velocity', this.velocity);
-    } else if (this.data.movementEnabled) {
+    } else {
       this.updateVelocity(dt);
     }
   },
@@ -1882,18 +1882,20 @@ module.exports = {
     var control, velocity, dVelocity,
         data = this.data;
 
-    for (var i = 0, l = data.movementControls.length; i < l; i++) {
-      control = this.el.components[data.movementControls[i] + COMPONENT_SUFFIX];
-      if (control && control.isVelocityActive()) {
-        if (control.getVelocityDelta) {
-          dVelocity = control.getVelocityDelta(dt);
-        } else if (control.getVelocity) {
-          this.el.setAttribute('velocity', control.getVelocity());
-          return;
-        } else {
-          throw new Error('Incompatible movement controls: ', data.movementControls[i]);
+    if (data.movementEnabled) {
+      for (var i = 0, l = data.movementControls.length; i < l; i++) {
+        control = this.el.components[data.movementControls[i] + COMPONENT_SUFFIX];
+        if (control && control.isVelocityActive()) {
+          if (control.getVelocityDelta) {
+            dVelocity = control.getVelocityDelta(dt);
+          } else if (control.getVelocity) {
+            this.el.setAttribute('velocity', control.getVelocity());
+            return;
+          } else {
+            throw new Error('Incompatible movement controls: ', data.movementControls[i]);
+          }
+          break;
         }
-        break;
       }
     }
 
@@ -1902,7 +1904,7 @@ module.exports = {
     velocity.x -= velocity.x * data.movementEasing * dt / 1000;
     velocity.z -= velocity.z * data.movementEasing * dt / 1000;
 
-    if (dVelocity) {
+    if (dVelocity && data.movementEnabled) {
       // Set acceleration
       if (dVelocity.length() > 1) {
         dVelocity.setLength(this.data.movementAcceleration * dt / 1000);
@@ -1960,7 +1962,7 @@ module.exports = {
  */
 module.exports = {
   schema: {type: 'vec4'},
-  tick: function () {
+  update: function () {
     var data = this.data;
     this.el.object3D.quaternion.set(data.x, data.y, data.z, data.w);
   }
@@ -1997,8 +1999,10 @@ module.exports = {
     if (isNaN(dt)) return;
 
     var physics = this.el.sceneEl.systems.physics || {options:{maxInterval: 1 / 60}},
-        velocity = this.el.getAttribute('velocity'), // TODO - why not this.el.data?
-        position = this.el.getAttribute('position');
+
+        // TODO - There's definitely a bug with getComputedAttribute and el.data.
+        velocity = this.el.getAttribute('velocity') || {x: 0, y: 0, z: 0},
+        position = this.el.getAttribute('position') || {x: 0, y: 0, z: 0};
 
     dt = Math.min(dt, physics.options.maxInterval * 1000);
 

@@ -11,13 +11,11 @@ module.exports = AFRAME.utils.extend({}, Body, {
   schema: {
     mass:           { default: 5 },
     linearDamping:  { default: 0.01 },
-    angularDamping: { default: 0.01 }
+    angularDamping: { default: 0.01 },
+    shape: {default: 'auto', oneOf: ['auto', 'box', 'hull']}
   },
 
   step: function () {
-    if (!this.body) return;
-    this.el.setAttribute('quaternion', this.body.quaternion);
-    this.el.setAttribute('position', this.body.position);
-    if (this.wireframe) this.syncWireframe();
+    this.syncFromPhysics();
   }
 });

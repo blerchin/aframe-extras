@@ -1,16 +1,21 @@
 # A-Frame Extras
 
+[![Build Status](https://travis-ci.org/donmccurdy/aframe-extras.svg?branch=master)](https://travis-ci.org/donmccurdy/aframe-extras)
+
 Add-ons and helpers for A-Frame VR.
 
 ## Usage (Scripts)
 
-In the [dist/](https://github.com/donmccurdy/aframe-extras/tree/master/dist) folder, download any package(s) you need. Include the scripts on your page:
+In the [dist/](https://github.com/donmccurdy/aframe-extras/tree/master/dist) folder, download any package(s) you need. Include the scripts on your page, and all components are automatically registered for you:
 
 ```html
-<script src="./aframe-extras.min.js"></script>
+<script src="//cdn.rawgit.com/donmccurdy/aframe-extras/v1.16.2/dist/aframe-extras.min.js"></script>
 ```
 
-Each package's components are automatically registered for you.
+CDN builds for aframe-extras/v1.16.2:
+
+- [aframe-extras.js](https://cdn.rawgit.com/donmccurdy/aframe-extras/v1.16.2/dist/aframe-extras.js) *(development)*
+- [aframe-extras.min.js](https://cdn.rawgit.com/donmccurdy/aframe-extras/v1.16.2/dist/aframe-extras.min.js) *(production)*
 
 ## Usage (NPM)
 
@@ -39,27 +44,28 @@ browserify custom-extras.js -o bundle.js
 ## Add-ons
 
 <!-- tree src -I index.js -->
-```
+<pre>
 src
-├── controls
+├── <a href="/src/controls">controls/</a>
 │   ├── checkpoint-controls.js
 │   ├── gamepad-controls.js
 │   ├── hmd-controls.js
-│   ├── keyboard-controls.js
-│   ├── mouse-controls.js
+│   ├── keyboard-controls.js    <i>(not VR-friendly)</i>
+│   ├── mouse-controls.js       <i>(not VR-friendly)</i>
 │   ├── touch-controls.js
 │   └── universal-controls.js
-├── loaders
-│   ├── fbx-model.js
+├── <a href="/src/loaders">loaders/</a>
+│   ├── fbx-model.js            <i>(experimental)</i>
+│   ├── ply-model.js
 │   └── three-model.js
-├── math
+├── <a href="/src/math">math/</a>
 │   ├── quaternion.js
 │   └── velocity.js
-├── misc
+├── <a href="/src/misc">misc/</a>
 │   ├── checkpoint.js
-│   ├── jump-ability.js
+│   ├── jump-ability.js         <i>(not VR-friendly)</i>
 │   └── toggle-velocity.js
-├── physics
+├── <a href="/src/physics">physics/</a>
 │   ├── body.js
 │   ├── dynamic-body.js
 │   ├── kinematic-body.js
@@ -67,56 +73,11 @@ src
 │   ├── static-body.js
 │   └── system
 │       └── physics.js
-├── primitives
-│   └── a-grid.js
-└── shadows
-    ├── shadow-light.js
-    └── shadow.js
-```
-
-### Controls
-
-Extensible movement/rotation/hotkey controls, with support for a variety of input devices.
-
-- `universal-controls`: Manager for other controls, which can be used to decide which input device is used when multiple are available, and to set common acceleration/sensitivity across all controls.
-
-#### Input devices:
-
-'checkpoint-controls', `gamepad-controls`, `hmd-controls`, `keybard-controls`, `mouse-controls`, and `touch-controls`.
-
-#### Other Controls
-
-I've written standalone components for several other control components.
-
-- [gamepad-controls](https://github.com/donmccurdy/aframe-gamepad-controls): A more advanced standalone gamepad controller than the version in this package.
-- [keyboard-controls](https://github.com/donmccurdy/aframe-keyboard-controls): A more advanced standalone keyboard controller than the version in this package.
-- `leap-motion-controls`: *In progress.*
-
-#### Mobile + Desktop Input Devices
-
-Connect input devices from your desktop to your mobile phone with WebRTC, using [ProxyControls.js](https://proxy-controls.donmccurdy.com).
-
-### Physics
-
-Components for A-Frame physics integration, built on [CANNON.js](http://schteppe.github.io/cannon.js/).
-
-**Scene Physics:**
-
-- `physics`: Added to the `<a-scene/>` element, and manages global physics World
-
-**Object Types:**
-
-- `dynamic-body`: Object that moves only according to physics simulation, which has mass and may collide with other objects.
-- `static-body`: Static body with a fixed position. Unaffected by gravity and collisions, but other objects may collide with it.
-- `kinematic-body`: Controlled but dynamic body, which moves but is not affected (directly) by the physics engine. Intended for use on the player's model. Gravity and collisions are simulated, without giving full control to the physics engine.
-
-**Math:**
-
-- `velocity`: Helper to update an object's by a fixed amount position over time.
-- `quaternion`: Helper for preventing gimbal-lock during rotation.
-
-### Shadows
-
-Runtime shadows, with the `shadow` and `shadow-light` components. Originally written by @ngokevin, and likely to be available in A-Frame later (https://github.com/aframevr/aframe-core/pull/348).
-
-> *NOTE: Adding shadows to more than a few simple objects can slow your scene >down significantly. For performant shadows on scenery, like trees and houses, bake your shadows into your textures using modeling software.*
+├── <a href="/src/primitives">primitives/</a>
+│   ├── a-grid.js
+│   ├── a-ocean.js
+│   └── a-tube.js
+└── <a href="/src/shadows">shadows/</a>
+    ├── shadow-light.js         <i>(experimental)</i>
+    └── shadow.js               <i>(experimental)</i>
+</pre>

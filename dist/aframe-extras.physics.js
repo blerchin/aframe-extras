@@ -1,6 +1,316 @@
 (function e(t,n,r){function s(o,u){if(!n[o]){if(!t[o]){var a=typeof require=="function"&&require;if(!u&&a)return a(o,!0);if(i)return i(o,!0);var f=new Error("Cannot find module '"+o+"'");throw f.code="MODULE_NOT_FOUND",f}var l=n[o]={exports:{}};t[o][0].call(l.exports,function(e){var n=t[o][1][e];return s(n?n:e)},l,l.exports,e,t,n,r)}return n[o].exports}var i=typeof require=="function"&&require;for(var o=0;o<r.length;o++)s(r[o]);return s})({1:[function(require,module,exports){
 require('./src/physics').registerAll();
-},{"./src/physics":10}],2:[function(require,module,exports){
+},{"./src/physics":11}],2:[function(require,module,exports){
+var CANNON = require('cannon'),
+    quickhull = require('./THREE.quickhull');
+
+var Type = {
+  BOX: 'Box',
+  HULL: 'ConvexPolyhedron'
+};
+
+/**
+ * Given a THREE.Object3D instance, creates a corresponding CANNON shape.
+ * @param  {THREE.Object3D} object
+ * @return {CANNON.Shape}
+ */
+module.exports = CANNON.mesh2shape = function (object, options) {
+  options = options || {};
+
+  if (options.type === Type.BOX) {
+    return createBoundingBoxShape(object);
+  } else if (options.type === Type.HULL) {
+    return createConvexPolyhedron(object);
+  } else if (options.type) {
+    throw new Error('[CANNON.mesh2shape] Invalid type "%s".', options.type);
+  }
+
+  var geometry = getGeometry(object);
+
+  if (!geometry) return null;
+
+  switch (geometry.type) {
+    case 'BoxGeometry':
+    case 'BoxBufferGeometry':
+      return createBoxShape(geometry);
+    case 'CylinderGeometry':
+    case 'CylinderBufferGeometry':
+      return createCylinderShape(geometry);
+    case 'PlaneGeometry':
+    case 'PlaneBufferGeometry':
+      return createPlaneShape(geometry);
+    case 'SphereGeometry':
+    case 'SphereBufferGeometry':
+      return createSphereShape(geometry);
+    case 'TubeGeometry':
+      return createTubeShape(geometry);
+    case 'Geometry':
+    case 'BufferGeometry':
+      return createTrimeshShape(geometry);
+    default:
+      console.warn('Unrecognized geometry: "%s". Using bounding box as shape.', geometry.type);
+      return createBoxShape(geometry);
+  }
+};
+
+CANNON.mesh2shape.Type = Type;
+
+/******************************************************************************
+ * Shape construction
+ */
+
+/**
+ * Bounding box needs to be computed with the entire mesh, not just geometry.
+ * @param  {THREE.Object3D} mesh
+ * @return {CANNON.Shape}
+ */
+function createBoundingBoxShape (object) {
+  var box, shape, localPosition, worldPosition,
+      helper = new THREE.BoundingBoxHelper(object);
+
+  helper.update();
+  box = helper.box;
+
+  if (!isFinite(box.min.lengthSq())) return null;
+
+  shape = new CANNON.Box(new CANNON.Vec3(
+    (box.max.x - box.min.x) / 2,
+    (box.max.y - box.min.y) / 2,
+    (box.max.z - box.min.z) / 2
+  ));
+
+  object.updateMatrixWorld();
+  worldPosition = new THREE.Vector3();
+  worldPosition.setFromMatrixPosition(object.matrixWorld);
+  localPosition = helper.position.sub(worldPosition);
+  if (localPosition.lengthSq()) {
+    shape.offset = localPosition;
+  }
+
+  return shape;
+}
+
+/**
+ * Computes 3D convex hull as a CANNON.ConvexPolyhedron.
+ * @param  {THREE.Object3D} mesh
+ * @return {CANNON.Shape}
+ */
+function createConvexPolyhedron (object) {
+  var i, vertices, faces, hull,
+      eps = 1e-4,
+      geometry = getGeometry(object);
+
+  if (!geometry || !geometry.vertices.length) return null;
+
+  // Perturb.
+  for (i = 0; i < geometry.vertices.length; i++) {
+    geometry.vertices[i].x += (Math.random() - 0.5) * eps;
+    geometry.vertices[i].y += (Math.random() - 0.5) * eps;
+    geometry.vertices[i].z += (Math.random() - 0.5) * eps;
+  }
+
+  // Compute the 3D convex hull.
+  hull = quickhull(geometry);
+
+  // Convert from THREE.Vector3 to CANNON.Vec3.
+  vertices = new Array(hull.vertices.length);
+  for (i = 0; i < hull.vertices.length; i++) {
+    vertices[i] = new CANNON.Vec3(hull.vertices[i].x, hull.vertices[i].y, hull.vertices[i].z);
+  }
+
+  // Convert from THREE.Face to Array<number>.
+  faces = new Array(hull.faces.length);
+  for (i = 0; i < hull.faces.length; i++) {
+    faces[i] = [hull.faces[i].a, hull.faces[i].b, hull.faces[i].c];
+  }
+
+  return new CANNON.ConvexPolyhedron(vertices, faces);
+}
+
+/**
+ * @param  {THREE.Geometry} geometry
+ * @return {CANNON.Shape}
+ */
+function createBoxShape (geometry) {
+  var vertices = getVertices(geometry);
+
+  if (!vertices.length) return null;
+
+  geometry.computeBoundingBox();
+  var box = geometry.boundingBox;
+  return new CANNON.Box(new CANNON.Vec3(
+    (box.max.x - box.min.x) / 2,
+    (box.max.y - box.min.y) / 2,
+    (box.max.z - box.min.z) / 2
+  ));
+}
+
+/**
+ * @param  {THREE.Geometry} geometry
+ * @return {CANNON.Shape}
+ */
+function createCylinderShape (geometry) {
+  var shape,
+      params = geometry.parameters;
+  shape = new CANNON.Cylinder(
+    params.radiusTop,
+    params.radiusBottom,
+    params.height,
+    params.radialSegments
+  );
+  shape.orientation = new CANNON.Quaternion();
+  shape.orientation.setFromEuler(THREE.Math.degToRad(-90), 0, 0, 'XYZ').normalize();
+  return shape;
+}
+
+/**
+ * @param  {THREE.Geometry} geometry
+ * @return {CANNON.Shape}
+ */
+function createPlaneShape (geometry) {
+  geometry.computeBoundingBox();
+  var box = geometry.boundingBox;
+  return new CANNON.Box(new CANNON.Vec3(
+    (box.max.x - box.min.x) / 2 || 0.1,
+    (box.max.y - box.min.y) / 2 || 0.1,
+    (box.max.z - box.min.z) / 2 || 0.1
+  ));
+}
+
+/**
+ * @param  {THREE.Geometry} geometry
+ * @return {CANNON.Shape}
+ */
+function createSphereShape (geometry) {
+  return new CANNON.Sphere(geometry.parameters.radius);
+}
+
+/**
+ * @param  {THREE.Geometry} geometry
+ * @return {CANNON.Shape}
+ */
+function createTubeShape (geometry) {
+  var tmp = new THREE.BufferGeometry();
+  tmp.fromGeometry(geometry);
+  return createTrimeshShape(tmp);
+}
+
+/**
+ * @param  {THREE.Geometry} geometry
+ * @return {CANNON.Shape}
+ */
+function createTrimeshShape (geometry) {
+  var indices,
+      vertices = getVertices(geometry);
+
+  if (!vertices.length) return null;
+
+  indices = Object.keys(vertices).map(Number);
+  return new CANNON.Trimesh(vertices, indices);
+}
+
+/******************************************************************************
+ * Utils
+ */
+
+/**
+ * Returns a single geometry for the given object. If the object is compound,
+ * its geometries are automatically merged.
+ * @param {THREE.Object3D} object
+ * @return {THREE.Geometry}
+ */
+function getGeometry (object) {
+  var matrix, mesh,
+      meshes = getMeshes(object),
+      tmp = new THREE.Geometry(),
+      combined = new THREE.Geometry();
+
+  if (meshes.length === 0) return null;
+  if (meshes.length === 1) return meshes[0].geometry;
+
+  while ((mesh = meshes.pop())) {
+    if (mesh.geometry instanceof THREE.BufferGeometry) {
+      tmp.fromBufferGeometry(mesh.geometry);
+      combined.merge(tmp, mesh.userData.matrix || mesh.matrix);
+    } else {
+      combined.merge(mesh.geometry, mesh.userData.matrix || mesh.matrix);
+    }
+    delete mesh.userData.matrix;
+  }
+
+  matrix = new THREE.Matrix4();
+  matrix.scale(object.scale);
+  combined.applyMatrix(matrix);
+  return combined;
+}
+
+/**
+ * @param  {THREE.Geometry} geometry
+ * @return {Array<number>}
+ */
+function getVertices (geometry) {
+  if (!geometry.attributes) {
+    geometry = new THREE.BufferGeometry().fromGeometry(geometry);
+  }
+  return geometry.attributes.position.array;
+}
+
+/**
+ * Returns a flat array of THREE.Mesh instances from the given object. If
+ * nested transformations are found, they are applied to child meshes
+ * as mesh.userData.matrix, so that each mesh has its position/rotation/scale
+ * independently of all of its parents except the top-level object.
+ * @param  {THREE.Object3D} object
+ * @return {Array<THREE.Mesh>}
+ */
+function getMeshes (object) {
+  var meshes = [],
+      identity = new THREE.Matrix4();
+
+  object.traverse(function (o) {
+    o.updateMatrix();
+    if (o.type === 'Mesh') {
+      meshes.push(o);
+    } else if (o !== object && !o.matrix.equals(identity)) {
+      // If transformations are applied to a THREE.Object3D or THREE.Group,
+      // they need to be inherited by descendent geometry.
+      o.traverse(function (o2) {
+        o2.updateMatrix();
+        o2.userData.matrix = o2.userData.matrix || o2.matrix.clone();
+        o2.userData.matrix.multiply(o.matrix);
+      });
+    }
+  });
+
+  return meshes;
+}
+
+/**
+ * @param  {THREE.Geometry} geometry
+ * @return {THREE.Geometry} Original geometry.
+ */
+function centerGeometry (geometry) {
+  geometry.computeBoundingSphere();
+
+  var center = geometry.boundingSphere.center;
+  var radius = geometry.boundingSphere.radius;
+
+  var s = radius === 0 ? 1 : 1.0 / radius;
+
+  var matrix = new THREE.Matrix4();
+  matrix.set(
+    1, 0, 0, - 1 * center.x,
+    0, 1, 0, - 1 * center.y,
+    0, 0, 1, - 1 * center.z,
+    0, 0, 0, 1
+  );
+
+  geometry.applyMatrix(matrix);
+
+  return geometry;
+}
+
+},{"./THREE.quickhull":4,"cannon":5}],3:[function(require,module,exports){
 /**
  * CANNON.shape2mesh
  *
@@ -160,69 +470,459 @@ CANNON.shape2mesh = function(body){
 
 module.exports = CANNON.shape2mesh;
 
-},{"cannon":4}],3:[function(require,module,exports){
-var CANNON = require('cannon');
-
+},{"cannon":5}],4:[function(require,module,exports){
 /**
- * Given a THREE.Object3D instance, creates a corresponding CANNON shape.
- * @param  {THREE.Object3D} object
- * @return {CANNON.Shape}
+
+  QuickHull
+  ---------
+
+  The MIT License
+
+  Copyright &copy; 2010-2014 three.js authors
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in
+  all copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+
+  THE SOFTWARE.
+
+
+    @author mark lundin / http://mark-lundin.com
+
+    This is a 3D implementation of the Quick Hull algorithm.
+    It is a fast way of computing a convex hull with average complexity
+    of O(n log(n)).
+    It uses depends on three.js and is supposed to create THREE.Geometry.
+
+    It's also very messy
+
  */
-module.exports = function (object) {
-  var mesh, meshes = [];
-  object.traverse(function (object) {
-    if (object.type === 'Mesh') {
-      meshes.push(object);
+
+module.exports = (function(){
+
+
+  var faces     = [],
+    faceStack   = [],
+    i, NUM_POINTS, extremes,
+    max     = 0,
+    dcur, current, j, v0, v1, v2, v3,
+    N, D;
+
+  var ab, ac, ax,
+    suba, subb, normal,
+    diff, subaA, subaB, subC;
+
+  function reset(){
+
+    ab    = new THREE.Vector3(),
+    ac    = new THREE.Vector3(),
+    ax    = new THREE.Vector3(),
+    suba  = new THREE.Vector3(),
+    subb  = new THREE.Vector3(),
+    normal  = new THREE.Vector3(),
+    diff  = new THREE.Vector3(),
+    subaA = new THREE.Vector3(),
+    subaB = new THREE.Vector3(),
+    subC  = new THREE.Vector3();
+
+  }
+
+  //temporary vectors
+
+  function process( points ){
+
+    // Iterate through all the faces and remove
+    while( faceStack.length > 0  ){
+      cull( faceStack.shift(), points );
     }
-  });
-
-  mesh = meshes[0];
-  if (meshes.length > 1) {
-    console.warn('[object2shape] Found too many objects - returning shape for first first');
-  } else if (meshes.length === 0) {
-    return null;
   }
 
-  switch (mesh.geometry.type) {
-    case 'BoxGeometry':
-      return createBoxShape(mesh.geometry);
-    case 'PlaneBufferGeometry':
-      return createPlaneShape(mesh.geometry);
-    case 'BufferGeometry':
-      return createTrimeshShape(mesh.geometry);
-    default:
-      console.warn('Unrecognized geometry: "%s". Using bounding box as shape.', mesh.geometry.type);
-      return createBoxShape(mesh.geometry);
+
+  var norm = function(){
+
+    var ca = new THREE.Vector3(),
+      ba = new THREE.Vector3(),
+      N = new THREE.Vector3();
+
+    return function( a, b, c ){
+
+      ca.subVectors( c, a );
+      ba.subVectors( b, a );
+
+      N.crossVectors( ca, ba );
+
+      return N.normalize();
+    }
+
+  }();
+
+
+  function getNormal( face, points ){
+
+    if( face.normal !== undefined ) return face.normal;
+
+    var p0 = points[face[0]],
+      p1 = points[face[1]],
+      p2 = points[face[2]];
+
+    ab.subVectors( p1, p0 );
+    ac.subVectors( p2, p0 );
+    normal.crossVectors( ac, ab );
+    normal.normalize();
+
+    return face.normal = normal.clone();
+
   }
-};
 
-function createPlaneShape (geometry) {
-  geometry.computeBoundingBox();
-  var box = geometry.boundingBox;
-  return new CANNON.Box(new CANNON.Vec3(
-    (box.max.x - box.min.x) / 2 || 0.1,
-    (box.max.y - box.min.y) / 2 || 0.1,
-    (box.max.z - box.min.z) / 2 || 0.1
-  ));
-}
 
-function createBoxShape (geometry) {
-  geometry.computeBoundingBox();
-  var box = geometry.boundingBox;
-  return new CANNON.Box(new CANNON.Vec3(
-    (box.max.x - box.min.x) / 2,
-    (box.max.y - box.min.y) / 2,
-    (box.max.z - box.min.z) / 2
-  ));
-}
+  function assignPoints( face, pointset, points ){
 
-function createTrimeshShape (geometry) {
-  var vertices = geometry.attributes.position.array;
-  var indices = Object.keys(vertices).map(Number);
-  return new CANNON.Trimesh(vertices, indices);
-}
+    // ASSIGNING POINTS TO FACE
+    var p0 = points[face[0]],
+      dots = [], apex,
+      norm = getNormal( face, points );
 
-},{"cannon":4}],4:[function(require,module,exports){
+
+    // Sory all the points by there distance from the plane
+    pointset.sort( function( aItem, bItem ){
+
+
+      dots[aItem.x/3] = dots[aItem.x/3] !== undefined ? dots[aItem.x/3] : norm.dot( suba.subVectors( aItem, p0 ));
+      dots[bItem.x/3] = dots[bItem.x/3] !== undefined ? dots[bItem.x/3] : norm.dot( subb.subVectors( bItem, p0 ));
+
+      return dots[aItem.x/3] - dots[bItem.x/3] ;
+    });
+
+    //TODO :: Must be a faster way of finding and index in this array
+    var index = pointset.length;
+
+    if( index === 1 ) dots[pointset[0].x/3] = norm.dot( suba.subVectors( pointset[0], p0 ));
+    while( index-- > 0 && dots[pointset[index].x/3] > 0 )
+
+    var point;
+    if( index + 1 < pointset.length && dots[pointset[index+1].x/3] > 0 ){
+
+      face.visiblePoints  = pointset.splice( index + 1 );
+    }
+  }
+
+
+
+
+  function cull( face, points ){
+
+    var i = faces.length,
+      dot, visibleFace, currentFace,
+      visibleFaces = [face];
+
+    var apex = points.indexOf( face.visiblePoints.pop() );
+
+    // Iterate through all other faces...
+    while( i-- > 0 ){
+      currentFace = faces[i];
+      if( currentFace !== face ){
+        // ...and check if they're pointing in the same direction
+        dot = getNormal( currentFace, points ).dot( diff.subVectors( points[apex], points[currentFace[0]] ));
+        if( dot > 0 ){
+          visibleFaces.push( currentFace );
+        }
+      }
+    }
+
+    var index, neighbouringIndex, vertex;
+
+    // Determine Perimeter - Creates a bounded horizon
+
+    // 1. Pick an edge A out of all possible edges
+    // 2. Check if A is shared by any other face. a->b === b->a
+      // 2.1 for each edge in each triangle, isShared = ( f1.a == f2.a && f1.b == f2.b ) || ( f1.a == f2.b && f1.b == f2.a )
+    // 3. If not shared, then add to convex horizon set,
+        //pick an end point (N) of the current edge A and choose a new edge NA connected to A.
+        //Restart from 1.
+    // 4. If A is shared, it is not an horizon edge, therefore flag both faces that share this edge as candidates for culling
+    // 5. If candidate geometry is a degenrate triangle (ie. the tangent space normal cannot be computed) then remove that triangle from all further processing
+
+
+    var j = i = visibleFaces.length;
+    var isDistinct = false,
+      hasOneVisibleFace = i === 1,
+      cull = [],
+      perimeter = [],
+      edgeIndex = 0, compareFace, nextIndex,
+      a, b;
+
+    var allPoints = [];
+    var originFace = [visibleFaces[0][0], visibleFaces[0][1], visibleFaces[0][1], visibleFaces[0][2], visibleFaces[0][2], visibleFaces[0][0]];
+
+
+    if( visibleFaces.length === 1 ){
+      currentFace = visibleFaces[0];
+
+      perimeter = [currentFace[0], currentFace[1], currentFace[1], currentFace[2], currentFace[2], currentFace[0]];
+      // remove visible face from list of faces
+      if( faceStack.indexOf( currentFace ) > -1 ){
+        faceStack.splice( faceStack.indexOf( currentFace ), 1 );
+      }
+
+
+      if( currentFace.visiblePoints ) allPoints = allPoints.concat( currentFace.visiblePoints );
+      faces.splice( faces.indexOf( currentFace ), 1 );
+
+    }else{
+
+      while( i-- > 0  ){  // for each visible face
+
+        currentFace = visibleFaces[i];
+
+        // remove visible face from list of faces
+        if( faceStack.indexOf( currentFace ) > -1 ){
+          faceStack.splice( faceStack.indexOf( currentFace ), 1 );
+        }
+
+        if( currentFace.visiblePoints ) allPoints = allPoints.concat( currentFace.visiblePoints );
+        faces.splice( faces.indexOf( currentFace ), 1 );
+
+
+        var isSharedEdge;
+        cEdgeIndex = 0;
+
+        while( cEdgeIndex < 3 ){ // Iterate through it's edges
+
+          isSharedEdge = false;
+          j = visibleFaces.length;
+          a = currentFace[cEdgeIndex]
+          b = currentFace[(cEdgeIndex+1)%3];
+
+
+          while( j-- > 0 && !isSharedEdge ){ // find another visible faces
+
+            compareFace = visibleFaces[j];
+            edgeIndex = 0;
+
+            // isSharedEdge = compareFace == currentFace;
+            if( compareFace !== currentFace ){
+
+              while( edgeIndex < 3 && !isSharedEdge ){ //Check all it's indices
+
+                nextIndex = ( edgeIndex + 1 );
+                isSharedEdge = ( compareFace[edgeIndex] === a && compareFace[nextIndex%3] === b ) ||
+                         ( compareFace[edgeIndex] === b && compareFace[nextIndex%3] === a );
+
+                edgeIndex++;
+              }
+            }
+          }
+
+          if( !isSharedEdge || hasOneVisibleFace ){
+            perimeter.push( a );
+            perimeter.push( b );
+          }
+
+          cEdgeIndex++;
+        }
+      }
+    }
+
+    // create new face for all pairs around edge
+    i = 0;
+    var l = perimeter.length/2;
+    var f;
+
+    while( i < l ){
+      f = [ perimeter[i*2+1], apex, perimeter[i*2] ];
+      assignPoints( f, allPoints, points );
+      faces.push( f )
+      if( f.visiblePoints !== undefined  )faceStack.push( f );
+      i++;
+    }
+
+  }
+
+  var distSqPointSegment = function(){
+
+    var ab = new THREE.Vector3(),
+      ac = new THREE.Vector3(),
+      bc = new THREE.Vector3();
+
+    return function( a, b, c ){
+
+        ab.subVectors( b, a );
+        ac.subVectors( c, a );
+        bc.subVectors( c, b );
+
+        var e = ac.dot(ab);
+        if (e < 0.0) return ac.dot( ac );
+        var f = ab.dot( ab );
+        if (e >= f) return bc.dot(  bc );
+        return ac.dot( ac ) - e * e / f;
+
+      }
+
+  }();
+
+
+
+
+
+  return function( geometry ){
+
+    reset();
+
+
+    points    = geometry.vertices;
+    faces     = [],
+    faceStack   = [],
+    i       = NUM_POINTS = points.length,
+    extremes  = points.slice( 0, 6 ),
+    max     = 0;
+
+
+
+    /*
+     *  FIND EXTREMETIES
+     */
+    while( i-- > 0 ){
+      if( points[i].x < extremes[0].x ) extremes[0] = points[i];
+      if( points[i].x > extremes[1].x ) extremes[1] = points[i];
+
+      if( points[i].y < extremes[2].y ) extremes[2] = points[i];
+      if( points[i].y < extremes[3].y ) extremes[3] = points[i];
+
+      if( points[i].z < extremes[4].z ) extremes[4] = points[i];
+      if( points[i].z < extremes[5].z ) extremes[5] = points[i];
+    }
+
+
+    /*
+     *  Find the longest line between the extremeties
+     */
+
+    j = i = 6;
+    while( i-- > 0 ){
+      j = i - 1;
+      while( j-- > 0 ){
+          if( max < (dcur = extremes[i].distanceToSquared( extremes[j] )) ){
+        max = dcur;
+        v0 = extremes[ i ];
+        v1 = extremes[ j ];
+
+          }
+        }
+      }
+
+
+      // 3. Find the most distant point to the line segment, this creates a plane
+      i = 6;
+      max = 0;
+    while( i-- > 0 ){
+      dcur = distSqPointSegment( v0, v1, extremes[i]);
+      if( max < dcur ){
+        max = dcur;
+            v2 = extremes[ i ];
+          }
+    }
+
+
+      // 4. Find the most distant point to the plane.
+
+      N = norm(v0, v1, v2);
+      D = N.dot( v0 );
+
+
+      max = 0;
+      i = NUM_POINTS;
+      while( i-- > 0 ){
+        dcur = Math.abs( points[i].dot( N ) - D );
+          if( max < dcur ){
+            max = dcur;
+            v3 = points[i];
+      }
+      }
+
+
+
+      var v0Index = points.indexOf( v0 ),
+      v1Index = points.indexOf( v1 ),
+      v2Index = points.indexOf( v2 ),
+      v3Index = points.indexOf( v3 );
+
+
+    //  We now have a tetrahedron as the base geometry.
+    //  Now we must subdivide the
+
+      var tetrahedron =[
+        [ v2Index, v1Index, v0Index ],
+        [ v1Index, v3Index, v0Index ],
+        [ v2Index, v3Index, v1Index ],
+        [ v0Index, v3Index, v2Index ],
+    ];
+
+
+
+    subaA.subVectors( v1, v0 ).normalize();
+    subaB.subVectors( v2, v0 ).normalize();
+    subC.subVectors ( v3, v0 ).normalize();
+    var sign  = subC.dot( new THREE.Vector3().crossVectors( subaB, subaA ));
+
+
+    // Reverse the winding if negative sign
+    if( sign < 0 ){
+      tetrahedron[0].reverse();
+      tetrahedron[1].reverse();
+      tetrahedron[2].reverse();
+      tetrahedron[3].reverse();
+    }
+
+
+    //One for each face of the pyramid
+    var pointsCloned = points.slice();
+    pointsCloned.splice( pointsCloned.indexOf( v0 ), 1 );
+    pointsCloned.splice( pointsCloned.indexOf( v1 ), 1 );
+    pointsCloned.splice( pointsCloned.indexOf( v2 ), 1 );
+    pointsCloned.splice( pointsCloned.indexOf( v3 ), 1 );
+
+
+    var i = tetrahedron.length;
+    while( i-- > 0 ){
+      assignPoints( tetrahedron[i], pointsCloned, points );
+      if( tetrahedron[i].visiblePoints !== undefined ){
+        faceStack.push( tetrahedron[i] );
+      }
+      faces.push( tetrahedron[i] );
+    }
+
+    process( points );
+
+
+    //  Assign to our geometry object
+
+    var ll = faces.length;
+    while( ll-- > 0 ){
+      geometry.faces[ll] = new THREE.Face3( faces[ll][2], faces[ll][1], faces[ll][0], faces[ll].normal )
+    }
+
+    geometry.normalsNeedUpdate = true;
+
+    return geometry;
+
+  }
+
+}())
+
+},{}],5:[function(require,module,exports){
 (function (global){
 /*
  * Copyright (c) 2015 cannon.js Authors
@@ -13912,7 +14612,7 @@ World.prototype.clearForces = function(){
 (2)
 });
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],5:[function(require,module,exports){
+},{}],6:[function(require,module,exports){
 module.exports = {
   'velocity':   require('./velocity'),
   'quaternion': require('./quaternion'),
@@ -13929,7 +14629,7 @@ module.exports = {
   }
 };
 
-},{"./quaternion":6,"./velocity":7}],6:[function(require,module,exports){
+},{"./quaternion":7,"./velocity":8}],7:[function(require,module,exports){
 /**
  * Quaternion.
  *
@@ -13940,13 +14640,13 @@ module.exports = {
  */
 module.exports = {
   schema: {type: 'vec4'},
-  tick: function () {
+  update: function () {
     var data = this.data;
     this.el.object3D.quaternion.set(data.x, data.y, data.z, data.w);
   }
 };
 
-},{}],7:[function(require,module,exports){
+},{}],8:[function(require,module,exports){
 /**
  * Velocity, in m/s.
  */
@@ -13977,8 +14677,10 @@ module.exports = {
     if (isNaN(dt)) return;
 
     var physics = this.el.sceneEl.systems.physics || {options:{maxInterval: 1 / 60}},
-        velocity = this.el.getAttribute('velocity'), // TODO - why not this.el.data?
-        position = this.el.getAttribute('position');
+
+        // TODO - There's definitely a bug with getComputedAttribute and el.data.
+        velocity = this.el.getAttribute('velocity') || {x: 0, y: 0, z: 0},
+        position = this.el.getAttribute('position') || {x: 0, y: 0, z: 0};
 
     dt = Math.min(dt, physics.options.maxInterval * 1000);
 
@@ -13990,9 +14692,9 @@ module.exports = {
   }
 };
 
-},{}],8:[function(require,module,exports){
+},{}],9:[function(require,module,exports){
 var CANNON = require('cannon'),
-    object2shape = require('../../lib/object2shape');
+    mesh2shape = require('../../lib/CANNON-mesh2shape');
 
 require('../../lib/CANNON-shape2mesh');
 
@@ -14005,16 +14707,37 @@ module.exports = {
 
   initBody: function () {
     this.system = this.el.sceneEl.systems.physics;
-    this.system.addBehavior(this, this.system.Phase.SIMULATE);
 
-    var shape = object2shape(this.el.object3D);
+    var shape, options;
+
+    if (this.data.shape !== 'auto') {
+      options = {
+        type: mesh2shape.Type[this.data.shape.toUpperCase()]
+      };
+    }
+
+    // TODO - This is pretty obtuse. There really ought to be a clean way to
+    // delay component initialization until the scene and all of its components
+    // have been taken care of.
+    shape = mesh2shape(this.el.object3D, options);
     if (shape && this.el.sceneEl.hasLoaded) {
       this.initBody_(shape);
     } else if (shape && !this.el.sceneEl.hasLoaded) {
       this.el.sceneEl.addEventListener('loaded', this.initBody_.bind(this, shape));
+    } else if (!this.el.sceneEl.hasLoaded) {
+      this.el.sceneEl.addEventListener('loaded', function () {
+        shape = mesh2shape(this.el.object3D, options);
+        if (shape) {
+          this.initBody_(shape);
+        } else {
+          this.el.addEventListener('model-loaded', function (e) {
+            this.initBody_(mesh2shape(e.detail.model, options));
+          }.bind(this));
+        }
+      }.bind(this));
     } else {
       this.el.addEventListener('model-loaded', function (e) {
-        this.initBody_(object2shape(e.detail.model));
+        this.initBody_(mesh2shape(e.detail.model, options));
       }.bind(this));
     }
   },
@@ -14039,13 +14762,13 @@ module.exports = {
     }
 
     this.body = new CANNON.Body({
-      shape: shape,
       mass: data.mass || 0,
       material: this.system.material,
       position: new CANNON.Vec3(pos.x, pos.y, pos.z),
       linearDamping: data.linearDamping,
       angularDamping: data.angularDamping
     });
+    this.body.addShape(shape, shape.offset, shape.orientation);
 
     // Apply rotation
     var rot = el.getAttribute('rotation') || {x: 0, y: 0, z: 0};
@@ -14058,32 +14781,106 @@ module.exports = {
 
     // Show wireframe
     if (this.system.options.debug) {
-      var mesh = CANNON.shape2mesh(this.body).children[0];
-      this.wireframe = new THREE.EdgesHelper(mesh, 0xff0000);
-      this.syncWireframe();
-      this.el.sceneEl.object3D.add(this.wireframe);
+      this.createWireframe(this.body, shape);
     }
 
+    this.el.body = this.body;
     this.body.el = this.el;
-    this.system.addBody(this.body);
-    console.info('[%s] loaded', this.name);
+    this.loaded = true;
+    this.play();
+
+    this.el.emit('body-loaded', {body: this.el.body});
   },
 
-  remove: function () {
+  play: function () {
+    if (!this.loaded) return;
+
+    this.system.addBehavior(this, this.system.Phase.SIMULATE);
+    this.system.addBody(this.body);
+    if (this.wireframe) this.el.sceneEl.object3D.add(this.wireframe);
+
+    this.syncToPhysics();
+  },
+
+  pause: function () {
+    if (!this.loaded) return;
+
     this.system.removeBehavior(this, this.system.Phase.SIMULATE);
-    if (this.body) this.system.removeBody(this.body);
+    this.system.removeBody(this.body);
     if (this.wireframe) this.el.sceneEl.object3D.remove(this.wireframe);
   },
 
+  remove: function () {
+    this.pause();
+    delete this.body.el;
+    delete this.body;
+    delete this.el.body;
+    delete this.wireframe;
+  },
+
+  createWireframe: function (body, shape) {
+    var offset = shape.offset,
+        orientation = shape.orientation,
+        mesh = CANNON.shape2mesh(body).children[0];
+    this.wireframe = new THREE.EdgesHelper(mesh, 0xff0000);
+
+    if (offset) {
+      this.wireframe.offset = offset.clone();
+    }
+
+    if (orientation) {
+      orientation.inverse(orientation);
+      this.wireframe.orientation = new THREE.Quaternion(
+        orientation.x,
+        orientation.y,
+        orientation.z,
+        orientation.w
+      );
+    }
+
+    this.syncWireframe();
+  },
+
   syncWireframe: function () {
+    var offset,
+        wireframe = this.wireframe;
+
     if (!this.wireframe) return;
-    this.wireframe.quaternion.copy(this.body.quaternion);
-    this.wireframe.position.copy(this.body.position);
-    this.wireframe.updateMatrix();
+
+    // Apply rotation. If the shape required custom orientation, also apply
+    // that on the wireframe.
+    wireframe.quaternion.copy(this.body.quaternion);
+    if (wireframe.orientation) {
+      wireframe.quaternion.multiply(wireframe.orientation);
+    }
+
+    // Apply position. If the shape required custom offset, also apply that on
+    // the wireframe.
+    wireframe.position.copy(this.body.position);
+    if (wireframe.offset) {
+      offset = wireframe.offset.clone().applyQuaternion(wireframe.quaternion);
+      wireframe.position.add(offset);
+    }
+
+    wireframe.updateMatrix();
+  },
+
+  syncToPhysics: function () {
+    if (!this.body) return;
+    if (this.el.components.velocity) this.body.velocity.copy(this.el.getAttribute('velocity'));
+    if (this.el.components.position) this.body.position.copy(this.el.getAttribute('position'));
+    if (this.wireframe) this.syncWireframe();
+  },
+
+  syncFromPhysics: function () {
+    if (!this.body) return;
+    this.el.setAttribute('quaternion', this.body.quaternion);
+    this.el.setAttribute('position', this.body.position);
+    if (this.wireframe) this.syncWireframe();
   }
 };
 
-},{"../../lib/CANNON-shape2mesh":2,"../../lib/object2shape":3,"cannon":4}],9:[function(require,module,exports){
+},{"../../lib/CANNON-mesh2shape":2,"../../lib/CANNON-shape2mesh":3,"cannon":5}],10:[function(require,module,exports){
 var Body = require('./body');
 
 /**
@@ -14097,19 +14894,18 @@ module.exports = AFRAME.utils.extend({}, Body, {
   schema: {
     mass:           { default: 5 },
     linearDamping:  { default: 0.01 },
-    angularDamping: { default: 0.01 }
+    angularDamping: { default: 0.01 },
+    shape: {default: 'auto', oneOf: ['auto', 'box', 'hull']}
   },
 
   step: function () {
-    if (!this.body) return;
-    this.el.setAttribute('quaternion', this.body.quaternion);
-    this.el.setAttribute('position', this.body.position);
-    if (this.wireframe) this.syncWireframe();
+    this.syncFromPhysics();
   }
 });
 
-},{"./body":8}],10:[function(require,module,exports){
-var math = require('../math');
+},{"./body":9}],11:[function(require,module,exports){
+var CANNON = require('cannon'),
+    math = require('../math');
 
 module.exports = {
   'physics':        require('./physics'),
@@ -14137,7 +14933,10 @@ module.exports = {
   }
 };
 
-},{"../math":5,"./dynamic-body":9,"./kinematic-body":11,"./physics":12,"./static-body":13,"./system/physics":14}],11:[function(require,module,exports){
+// Export CANNON.js.
+window.CANNON = window.CANNON || CANNON;
+
+},{"../math":6,"./dynamic-body":10,"./kinematic-body":12,"./physics":13,"./static-body":14,"./system/physics":15,"cannon":5}],12:[function(require,module,exports){
 /**
  * Kinematic body.
  *
@@ -14169,7 +14968,8 @@ module.exports = {
     mass:           { default: 5 },
     radius:         { default: 1.3 },
     height:         { default: 1.764 },
-    linearDamping:  { default: 0.05 }
+    linearDamping:  { default: 0.05 },
+    enableSlopes:   { default: true }
   },
 
   /*******************************************************************
@@ -14194,8 +14994,8 @@ module.exports = {
     });
     this.body.position.y -= (data.height - data.radius); // TODO - Simplify.
 
+    this.body.el = this.el;
     this.system.addBody(this.body);
-    console.info('[kinematic-body] loaded');
   },
 
   remove: function () {
@@ -14273,6 +15073,12 @@ module.exports = {
 
       normalizedVelocity.copy(velocity).normalize();
       if (groundBody && normalizedVelocity.y < 0.5) {
+        if (!data.enableSlopes) {
+          groundNormal.set(0, 1, 0);
+        } else if (groundNormal.y < 1 - EPS) {
+          groundNormal = this.raycastToGround(groundBody, groundNormal);
+        }
+
         // 4. Project trajectory onto the top-most ground object, unless
         // trajectory is > 45º.
         velocity = velocity.projectOnPlane(groundNormal);
@@ -14298,17 +15104,41 @@ module.exports = {
       body.velocity.copy(velocity);
       this.el.setAttribute('velocity', velocity);
     };
-  }())
+  }()),
+
+  /**
+   * When walking on complex surfaces (trimeshes, borders between two shapes),
+   * the collision normals returned for the player sphere can be very
+   * inconsistent. To address this, raycast straight down, find the collision
+   * normal, and return whichever normal is more vertical.
+   * @param  {CANNON.Body} groundBody
+   * @param  {CANNON.Vec3} groundNormal
+   * @return {CANNON.Vec3}
+   */
+  raycastToGround: function (groundBody, groundNormal) {
+    var ray,
+        hitNormal,
+        vFrom = this.body.position,
+        vTo = this.body.position.clone();
+
+    vTo.y -= this.data.height;
+    ray = new CANNON.Ray(vFrom, vTo);
+    ray._updateDirection(); // TODO - Report bug.
+    ray.intersectBody(groundBody);
+
+    if (!ray.hasHit) return groundNormal;
+
+    // Compare ABS, in case we're projecting against the inside of the face.
+    hitNormal = ray.result.hitNormalWorld;
+    return Math.abs(hitNormal.y) > Math.abs(groundNormal.y) ? hitNormal : groundNormal;
+  }
 };
 
-},{"cannon":4}],12:[function(require,module,exports){
+},{"cannon":5}],13:[function(require,module,exports){
 
 
 module.exports = {
   schema: {
-    friction:     { default: 0.01 },
-    restitution:  { default: 0.3 },
-    iterations:   { default: 5 },
     gravity:      { default: -9.8 },
 
     // Never step more than four frames at once. Effectively pauses the scene
@@ -14316,7 +15146,7 @@ module.exports = {
     maxInterval:      { default: 4 / 60 },
 
     // If true, show wireframes around physics bodies.
-    debug:        { default: false }
+    debug:        { default: false },
   },
 
   update: function (previousData) {
@@ -14329,7 +15159,7 @@ module.exports = {
   }
 };
 
-},{}],13:[function(require,module,exports){
+},{}],14:[function(require,module,exports){
 var Body = require('./body');
 
 /**
@@ -14339,15 +15169,15 @@ var Body = require('./body');
  * other objects may collide with it.
  */
 module.exports = AFRAME.utils.extend({}, Body, {
+  schema: {
+    shape: {default: 'auto', oneOf: ['auto', 'box', 'hull']}
+  },
   step: function () {
-    if (!this.body) return;
-    if (this.el.components.velocity) this.body.velocity.copy(this.el.getAttribute('velocity'));
-    if (this.el.components.position) this.body.position.copy(this.el.getAttribute('position'));
-    if (this.wireframe) this.syncWireframe();
+    this.syncToPhysics();
   }
 });
 
-},{"./body":8}],14:[function(require,module,exports){
+},{"./body":9}],15:[function(require,module,exports){
 var CANNON = require('cannon');
 
 var OPTIONS = {
@@ -14377,12 +15207,17 @@ module.exports = {
     RENDER:   'render'
   },
 
+  /**
+   * Initializes the physics system.
+   */
   init: function () {
     this.options = AFRAME.utils.extend({}, OPTIONS);
 
     this.children = {};
     this.children[this.Phase.SIMULATE] = [];
     this.children[this.Phase.RENDER] = [];
+
+    this.listeners = {};
 
     this.world = new CANNON.World();
     this.world.quatNormalizeSkip = 0;
@@ -14400,23 +15235,14 @@ module.exports = {
     this.world.addContactMaterial(this.contactMaterial);
   },
 
-  setOption: function (opt, value) {
-    this.options[opt] = value;
-    switch (opt) {
-      case 'maxInterval':
-        break; // no-op
-      case 'friction':
-      case 'restitution':
-      case 'iterations':
-      case 'gravity':
-      case 'debug':
-        console.warn('Option "%s" cannot yet be dynamically updated.', opt);
-        break;
-      default:
-        console.error('Option "%s" not recognized.', opt);
-    }
-  },
-
+  /**
+   * Updates the physics world on each tick of the A-Frame scene. It would be
+   * entirely possible to separate the two – updating physics more or less
+   * frequently than the scene – if greater precision or performance were
+   * necessary.
+   * @param  {number} t
+   * @param  {number} dt
+   */
   tick: function (t, dt) {
     if (isNaN(dt)) return;
 
@@ -14432,21 +15258,75 @@ module.exports = {
     }
   },
 
+  /**
+   * Adds a body to the scene, and binds collision events to the element.
+   * @param {CANNON.Body} body
+   */
   addBody: function (body) {
+    this.listeners[body.id] = function (e) { body.el.emit('collide', e); };
+    body.addEventListener('collide', this.listeners[body.id]);
     this.world.addBody(body);
   },
 
+  /**
+   * Removes a body, and its listeners, from the scene.
+   * @param {CANNON.Body} body
+   */
   removeBody: function (body) {
+    body.removeEventListener('collide', this.listeners[body.id]);
+    delete this.listeners[body.id];
     this.world.removeBody(body);
   },
 
+  /**
+   * Adds a component instance to the system, to be invoked on each tick during
+   * the given phase.
+   * @param {Component} component
+   * @param {string} phase
+   */
   addBehavior: function (component, phase) {
     this.children[phase].push(component);
   },
 
+  /**
+   * Removes a component instance from the system.
+   * @param {Component} component
+   * @param {string} phase
+   */
   removeBehavior: function (component, phase) {
     this.children[phase].splice(this.children[phase].indexOf(component), 1);
+  },
+
+  /**
+   * Sets an option on the physics system, affecting future simulation steps.
+   * @param {string} opt
+   * @param {mixed} value
+   */
+  setOption: function (opt, value) {
+    if (this.options[opt] === value) return;
+
+    switch (opt) {
+      case 'maxInterval': return this.setMaxInterval(value);
+      case 'gravity':     return this.setGravity(value);
+      case 'debug':       return this.setDebug(value);
+      default:
+        console.error('Option "%s" not recognized.', opt);
+    }
+  },
+
+  setMaxInterval: function (maxInterval) {
+    this.options.maxInterval = maxInterval;
+  },
+
+  setGravity: function (gravity) {
+    this.options.gravity = gravity;
+    this.world.gravity.y = gravity;
+  },
+
+  setDebug: function (debug) {
+    this.options.debug = debug;
+    console.warn('[physics] Option "debug" cannot be dynamically updated yet');
   }
 };
 
-},{"cannon":4}]},{},[1]);
+},{"cannon":5}]},{},[1]);

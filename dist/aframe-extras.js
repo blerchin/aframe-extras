@@ -21,7 +21,317 @@ module.exports = {
   }
 };
 
-},{"./src/controls":14,"./src/loaders":20,"./src/math":22,"./src/misc":26,"./src/physics":31,"./src/primitives":37,"./src/shadows":38}],3:[function(require,module,exports){
+},{"./src/controls":16,"./src/loaders":22,"./src/math":25,"./src/misc":29,"./src/physics":34,"./src/primitives":42,"./src/shadows":43}],3:[function(require,module,exports){
+var CANNON = require('cannon'),
+    quickhull = require('./THREE.quickhull');
+
+var Type = {
+  BOX: 'Box',
+  HULL: 'ConvexPolyhedron'
+};
+
+/**
+ * Given a THREE.Object3D instance, creates a corresponding CANNON shape.
+ * @param  {THREE.Object3D} object
+ * @return {CANNON.Shape}
+ */
+module.exports = CANNON.mesh2shape = function (object, options) {
+  options = options || {};
+
+  if (options.type === Type.BOX) {
+    return createBoundingBoxShape(object);
+  } else if (options.type === Type.HULL) {
+    return createConvexPolyhedron(object);
+  } else if (options.type) {
+    throw new Error('[CANNON.mesh2shape] Invalid type "%s".', options.type);
+  }
+
+  var geometry = getGeometry(object);
+
+  if (!geometry) return null;
+
+  switch (geometry.type) {
+    case 'BoxGeometry':
+    case 'BoxBufferGeometry':
+      return createBoxShape(geometry);
+    case 'CylinderGeometry':
+    case 'CylinderBufferGeometry':
+      return createCylinderShape(geometry);
+    case 'PlaneGeometry':
+    case 'PlaneBufferGeometry':
+      return createPlaneShape(geometry);
+    case 'SphereGeometry':
+    case 'SphereBufferGeometry':
+      return createSphereShape(geometry);
+    case 'TubeGeometry':
+      return createTubeShape(geometry);
+    case 'Geometry':
+    case 'BufferGeometry':
+      return createTrimeshShape(geometry);
+    default:
+      console.warn('Unrecognized geometry: "%s". Using bounding box as shape.', geometry.type);
+      return createBoxShape(geometry);
+  }
+};
+
+CANNON.mesh2shape.Type = Type;
+
+/******************************************************************************
+ * Shape construction
+ */
+
+/**
+ * Bounding box needs to be computed with the entire mesh, not just geometry.
+ * @param  {THREE.Object3D} mesh
+ * @return {CANNON.Shape}
+ */
+function createBoundingBoxShape (object) {
+  var box, shape, localPosition, worldPosition,
+      helper = new THREE.BoundingBoxHelper(object);
+
+  helper.update();
+  box = helper.box;
+
+  if (!isFinite(box.min.lengthSq())) return null;
+
+  shape = new CANNON.Box(new CANNON.Vec3(
+    (box.max.x - box.min.x) / 2,
+    (box.max.y - box.min.y) / 2,
+    (box.max.z - box.min.z) / 2
+  ));
+
+  object.updateMatrixWorld();
+  worldPosition = new THREE.Vector3();
+  worldPosition.setFromMatrixPosition(object.matrixWorld);
+  localPosition = helper.position.sub(worldPosition);
+  if (localPosition.lengthSq()) {
+    shape.offset = localPosition;
+  }
+
+  return shape;
+}
+
+/**
+ * Computes 3D convex hull as a CANNON.ConvexPolyhedron.
+ * @param  {THREE.Object3D} mesh
+ * @return {CANNON.Shape}
+ */
+function createConvexPolyhedron (object) {
+  var i, vertices, faces, hull,
+      eps = 1e-4,
+      geometry = getGeometry(object);
+
+  if (!geometry || !geometry.vertices.length) return null;
+
+  // Perturb.
+  for (i = 0; i < geometry.vertices.length; i++) {
+    geometry.vertices[i].x += (Math.random() - 0.5) * eps;
+    geometry.vertices[i].y += (Math.random() - 0.5) * eps;
+    geometry.vertices[i].z += (Math.random() - 0.5) * eps;
+  }
+
+  // Compute the 3D convex hull.
+  hull = quickhull(geometry);
+
+  // Convert from THREE.Vector3 to CANNON.Vec3.
+  vertices = new Array(hull.vertices.length);
+  for (i = 0; i < hull.vertices.length; i++) {
+    vertices[i] = new CANNON.Vec3(hull.vertices[i].x, hull.vertices[i].y, hull.vertices[i].z);
+  }
+
+  // Convert from THREE.Face to Array<number>.
+  faces = new Array(hull.faces.length);
+  for (i = 0; i < hull.faces.length; i++) {
+    faces[i] = [hull.faces[i].a, hull.faces[i].b, hull.faces[i].c];
+  }
+
+  return new CANNON.ConvexPolyhedron(vertices, faces);
+}
+
+/**
+ * @param  {THREE.Geometry} geometry
+ * @return {CANNON.Shape}
+ */
+function createBoxShape (geometry) {
+  var vertices = getVertices(geometry);
+
+  if (!vertices.length) return null;
+
+  geometry.computeBoundingBox();
+  var box = geometry.boundingBox;
+  return new CANNON.Box(new CANNON.Vec3(
+    (box.max.x - box.min.x) / 2,
+    (box.max.y - box.min.y) / 2,
+    (box.max.z - box.min.z) / 2
+  ));
+}
+
+/**
+ * @param  {THREE.Geometry} geometry
+ * @return {CANNON.Shape}
+ */
+function createCylinderShape (geometry) {
+  var shape,
+      params = geometry.parameters;
+  shape = new CANNON.Cylinder(
+    params.radiusTop,
+    params.radiusBottom,
+    params.height,
+    params.radialSegments
+  );
+  shape.orientation = new CANNON.Quaternion();
+  shape.orientation.setFromEuler(THREE.Math.degToRad(-90), 0, 0, 'XYZ').normalize();
+  return shape;
+}
+
+/**
+ * @param  {THREE.Geometry} geometry
+ * @return {CANNON.Shape}
+ */
+function createPlaneShape (geometry) {
+  geometry.computeBoundingBox();
+  var box = geometry.boundingBox;
+  return new CANNON.Box(new CANNON.Vec3(
+    (box.max.x - box.min.x) / 2 || 0.1,
+    (box.max.y - box.min.y) / 2 || 0.1,
+    (box.max.z - box.min.z) / 2 || 0.1
+  ));
+}
+
+/**
+ * @param  {THREE.Geometry} geometry
+ * @return {CANNON.Shape}
+ */
+function createSphereShape (geometry) {
+  return new CANNON.Sphere(geometry.parameters.radius);
+}
+
+/**
+ * @param  {THREE.Geometry} geometry
+ * @return {CANNON.Shape}
+ */
+function createTubeShape (geometry) {
+  var tmp = new THREE.BufferGeometry();
+  tmp.fromGeometry(geometry);
+  return createTrimeshShape(tmp);
+}
+
+/**
+ * @param  {THREE.Geometry} geometry
+ * @return {CANNON.Shape}
+ */
+function createTrimeshShape (geometry) {
+  var indices,
+      vertices = getVertices(geometry);
+
+  if (!vertices.length) return null;
+
+  indices = Object.keys(vertices).map(Number);
+  return new CANNON.Trimesh(vertices, indices);
+}
+
+/******************************************************************************
+ * Utils
+ */
+
+/**
+ * Returns a single geometry for the given object. If the object is compound,
+ * its geometries are automatically merged.
+ * @param {THREE.Object3D} object
+ * @return {THREE.Geometry}
+ */
+function getGeometry (object) {
+  var matrix, mesh,
+      meshes = getMeshes(object),
+      tmp = new THREE.Geometry(),
+      combined = new THREE.Geometry();
+
+  if (meshes.length === 0) return null;
+  if (meshes.length === 1) return meshes[0].geometry;
+
+  while ((mesh = meshes.pop())) {
+    if (mesh.geometry instanceof THREE.BufferGeometry) {
+      tmp.fromBufferGeometry(mesh.geometry);
+      combined.merge(tmp, mesh.userData.matrix || mesh.matrix);
+    } else {
+      combined.merge(mesh.geometry, mesh.userData.matrix || mesh.matrix);
+    }
+    delete mesh.userData.matrix;
+  }
+
+  matrix = new THREE.Matrix4();
+  matrix.scale(object.scale);
+  combined.applyMatrix(matrix);
+  return combined;
+}
+
+/**
+ * @param  {THREE.Geometry} geometry
+ * @return {Array<number>}
+ */
+function getVertices (geometry) {
+  if (!geometry.attributes) {
+    geometry = new THREE.BufferGeometry().fromGeometry(geometry);
+  }
+  return geometry.attributes.position.array;
+}
+
+/**
+ * Returns a flat array of THREE.Mesh instances from the given object. If
+ * nested transformations are found, they are applied to child meshes
+ * as mesh.userData.matrix, so that each mesh has its position/rotation/scale
+ * independently of all of its parents except the top-level object.
+ * @param  {THREE.Object3D} object
+ * @return {Array<THREE.Mesh>}
+ */
+function getMeshes (object) {
+  var meshes = [],
+      identity = new THREE.Matrix4();
+
+  object.traverse(function (o) {
+    o.updateMatrix();
+    if (o.type === 'Mesh') {
+      meshes.push(o);
+    } else if (o !== object && !o.matrix.equals(identity)) {
+      // If transformations are applied to a THREE.Object3D or THREE.Group,
+      // they need to be inherited by descendent geometry.
+      o.traverse(function (o2) {
+        o2.updateMatrix();
+        o2.userData.matrix = o2.userData.matrix || o2.matrix.clone();
+        o2.userData.matrix.multiply(o.matrix);
+      });
+    }
+  });
+
+  return meshes;
+}
+
+/**
+ * @param  {THREE.Geometry} geometry
+ * @return {THREE.Geometry} Original geometry.
+ */
+function centerGeometry (geometry) {
+  geometry.computeBoundingSphere();
+
+  var center = geometry.boundingSphere.center;
+  var radius = geometry.boundingSphere.radius;
+
+  var s = radius === 0 ? 1 : 1.0 / radius;
+
+  var matrix = new THREE.Matrix4();
+  matrix.set(
+    1, 0, 0, - 1 * center.x,
+    0, 1, 0, - 1 * center.y,
+    0, 0, 1, - 1 * center.z,
+    0, 0, 0, 1
+  );
+
+  geometry.applyMatrix(matrix);
+
+  return geometry;
+}
+
+},{"./THREE.quickhull":9,"cannon":11}],4:[function(require,module,exports){
 /**
  * CANNON.shape2mesh
  *
@@ -181,7 +491,7 @@ CANNON.shape2mesh = function(body){
 
 module.exports = CANNON.shape2mesh;
 
-},{"cannon":9}],4:[function(require,module,exports){
+},{"cannon":11}],5:[function(require,module,exports){
 /**
  * @author yamahigashi https://github.com/yamahigashi
  *
@@ -2945,7 +3255,7 @@ toMat44 = function ( arr ) {
 
 module.exports = THREE.FBXLoader;
 
-},{}],5:[function(require,module,exports){
+},{}],6:[function(require,module,exports){
 module.exports = Object.assign(function GamepadButton () {}, {
 	FACE_1: 0,
 	FACE_2: 1,
@@ -2968,7 +3278,7 @@ module.exports = Object.assign(function GamepadButton () {}, {
 	VENDOR: 16,
 });
 
-},{}],6:[function(require,module,exports){
+},{}],7:[function(require,module,exports){
 function GamepadButtonEvent (type, index, details) {
   this.type = type;
   this.index = index;
@@ -2978,7 +3288,939 @@ function GamepadButtonEvent (type, index, details) {
 
 module.exports = GamepadButtonEvent;
 
-},{}],7:[function(require,module,exports){
+},{}],8:[function(require,module,exports){
+/**
+ * @author Wei Meng / http://about.me/menway
+ *
+ * Description: A THREE loader for PLY ASCII files (known as the Polygon File Format or the Stanford Triangle Format).
+ *
+ *
+ * Limitations: ASCII decoding assumes file is UTF-8.
+ *
+ * Usage:
+ *  var loader = new THREE.PLYLoader();
+ *  loader.load('./models/ply/ascii/dolphins.ply', function (geometry) {
+ *
+ *    scene.add( new THREE.Mesh( geometry ) );
+ *
+ *  } );
+ *
+ * If the PLY file uses non standard property names, they can be mapped while
+ * loading. For example, the following maps the properties
+ * “diffuse_(red|green|blue)” in the file to standard color names.
+ *
+ * loader.setPropertyNameMapping( {
+ *  diffuse_red: 'red',
+ *  diffuse_green: 'green',
+ *  diffuse_blue: 'blue'
+ * } );
+ *
+ */
+
+module.exports = THREE.PLYLoader = function ( manager ) {
+
+  this.manager = ( manager !== undefined ) ? manager : THREE.DefaultLoadingManager;
+
+  this.propertyNameMapping = {};
+
+};
+
+THREE.PLYLoader.prototype = {
+
+  constructor: THREE.PLYLoader,
+
+  load: function ( url, onLoad, onProgress, onError ) {
+
+    var scope = this;
+
+    var loader = new THREE.XHRLoader( this.manager );
+    loader.setResponseType( 'arraybuffer' );
+    loader.load( url, function ( text ) {
+
+      onLoad( scope.parse( text ) );
+
+    }, onProgress, onError );
+
+  },
+
+  setPropertyNameMapping: function ( mapping ) {
+
+    this.propertyNameMapping = mapping;
+
+  },
+
+  bin2str: function ( buf ) {
+
+    var array_buffer = new Uint8Array( buf );
+    var str = '';
+    for ( var i = 0; i < buf.byteLength; i ++ ) {
+
+      str += String.fromCharCode( array_buffer[ i ] ); // implicitly assumes little-endian
+
+    }
+
+    return str;
+
+  },
+
+  isASCII: function( data ) {
+
+    var header = this.parseHeader( this.bin2str( data ) );
+
+    return header.format === "ascii";
+
+  },
+
+  parse: function ( data ) {
+
+    if ( data instanceof ArrayBuffer ) {
+
+      return this.isASCII( data )
+        ? this.parseASCII( this.bin2str( data ) )
+        : this.parseBinary( data );
+
+    } else {
+
+      return this.parseASCII( data );
+
+    }
+
+  },
+
+  parseHeader: function ( data ) {
+
+    var patternHeader = /ply([\s\S]*)end_header\s/;
+    var headerText = "";
+    var headerLength = 0;
+    var result = patternHeader.exec( data );
+    if ( result !== null ) {
+
+      headerText = result [ 1 ];
+      headerLength = result[ 0 ].length;
+
+    }
+
+    var header = {
+      comments: [],
+      elements: [],
+      headerLength: headerLength
+    };
+
+    var lines = headerText.split( '\n' );
+    var currentElement = undefined;
+    var lineType, lineValues;
+
+    function make_ply_element_property( propertValues, propertyNameMapping ) {
+
+      var property = {
+        type: propertValues[ 0 ]
+      };
+
+      if ( property.type === 'list' ) {
+
+        property.name = propertValues[ 3 ];
+        property.countType = propertValues[ 1 ];
+        property.itemType = propertValues[ 2 ];
+
+      } else {
+
+        property.name = propertValues[ 1 ];
+
+      }
+
+      if ( property.name in propertyNameMapping ) {
+
+        property.name = propertyNameMapping[ property.name ];
+
+      }
+
+      return property;
+
+    }
+
+    for ( var i = 0; i < lines.length; i ++ ) {
+
+      var line = lines[ i ];
+      line = line.trim();
+      if ( line === "" ) {
+
+        continue;
+
+      }
+      lineValues = line.split( /\s+/ );
+      lineType = lineValues.shift();
+      line = lineValues.join( " " );
+
+      switch ( lineType ) {
+
+      case "format":
+
+        header.format = lineValues[ 0 ];
+        header.version = lineValues[ 1 ];
+
+        break;
+
+      case "comment":
+
+        header.comments.push( line );
+
+        break;
+
+      case "element":
+
+        if ( ! ( currentElement === undefined ) ) {
+
+          header.elements.push( currentElement );
+
+        }
+
+        currentElement = Object();
+        currentElement.name = lineValues[ 0 ];
+        currentElement.count = parseInt( lineValues[ 1 ] );
+        currentElement.properties = [];
+
+        break;
+
+      case "property":
+
+        currentElement.properties.push( make_ply_element_property( lineValues, this.propertyNameMapping ) );
+
+        break;
+
+
+      default:
+
+        console.log( "unhandled", lineType, lineValues );
+
+      }
+
+    }
+
+    if ( ! ( currentElement === undefined ) ) {
+
+      header.elements.push( currentElement );
+
+    }
+
+    return header;
+
+  },
+
+  parseASCIINumber: function ( n, type ) {
+
+    switch ( type ) {
+
+    case 'char': case 'uchar': case 'short': case 'ushort': case 'int': case 'uint':
+    case 'int8': case 'uint8': case 'int16': case 'uint16': case 'int32': case 'uint32':
+
+      return parseInt( n );
+
+    case 'float': case 'double': case 'float32': case 'float64':
+
+      return parseFloat( n );
+
+    }
+
+  },
+
+  parseASCIIElement: function ( properties, line ) {
+
+    var values = line.split( /\s+/ );
+
+    var element = Object();
+
+    for ( var i = 0; i < properties.length; i ++ ) {
+
+      if ( properties[ i ].type === "list" ) {
+
+        var list = [];
+        var n = this.parseASCIINumber( values.shift(), properties[ i ].countType );
+
+        for ( var j = 0; j < n; j ++ ) {
+
+          list.push( this.parseASCIINumber( values.shift(), properties[ i ].itemType ) );
+
+        }
+
+        element[ properties[ i ].name ] = list;
+
+      } else {
+
+        element[ properties[ i ].name ] = this.parseASCIINumber( values.shift(), properties[ i ].type );
+
+      }
+
+    }
+
+    return element;
+
+  },
+
+  parseASCII: function ( data ) {
+
+    // PLY ascii format specification, as per http://en.wikipedia.org/wiki/PLY_(file_format)
+
+    var geometry = new THREE.Geometry();
+
+    var result;
+
+    var header = this.parseHeader( data );
+
+    var patternBody = /end_header\s([\s\S]*)$/;
+    var body = "";
+    if ( ( result = patternBody.exec( data ) ) !== null ) {
+
+      body = result [ 1 ];
+
+    }
+
+    var lines = body.split( '\n' );
+    var currentElement = 0;
+    var currentElementCount = 0;
+    geometry.useColor = false;
+
+    for ( var i = 0; i < lines.length; i ++ ) {
+
+      var line = lines[ i ];
+      line = line.trim();
+      if ( line === "" ) {
+
+        continue;
+
+      }
+
+      if ( currentElementCount >= header.elements[ currentElement ].count ) {
+
+        currentElement ++;
+        currentElementCount = 0;
+
+      }
+
+      var element = this.parseASCIIElement( header.elements[ currentElement ].properties, line );
+
+      this.handleElement( geometry, header.elements[ currentElement ].name, element );
+
+      currentElementCount ++;
+
+    }
+
+    return this.postProcess( geometry );
+
+  },
+
+  postProcess: function ( geometry ) {
+
+    if ( geometry.useColor ) {
+
+      for ( var i = 0; i < geometry.faces.length; i ++ ) {
+
+        geometry.faces[ i ].vertexColors = [
+          geometry.colors[ geometry.faces[ i ].a ],
+          geometry.colors[ geometry.faces[ i ].b ],
+          geometry.colors[ geometry.faces[ i ].c ]
+        ];
+
+      }
+
+      geometry.elementsNeedUpdate = true;
+
+    }
+
+    geometry.computeBoundingSphere();
+
+    return geometry;
+
+  },
+
+  handleElement: function ( geometry, elementName, element ) {
+
+    if ( elementName === "vertex" ) {
+
+      geometry.vertices.push(
+        new THREE.Vector3( element.x, element.y, element.z )
+      );
+
+      if ( 'red' in element && 'green' in element && 'blue' in element ) {
+
+        geometry.useColor = true;
+
+        var color = new THREE.Color();
+        color.setRGB( element.red / 255.0, element.green / 255.0, element.blue / 255.0 );
+        geometry.colors.push( color );
+
+      }
+
+    } else if ( elementName === "face" ) {
+
+      // BEGIN: Edits by donmccurdy.
+      var vertex_indices = element.vertex_indices || element.vertex_index;
+      // END: Edits by donmccurdy.
+
+      if ( vertex_indices.length === 3 ) {
+
+        geometry.faces.push(
+          new THREE.Face3( vertex_indices[ 0 ], vertex_indices[ 1 ], vertex_indices[ 2 ] )
+        );
+
+      } else if ( vertex_indices.length === 4 ) {
+
+        geometry.faces.push(
+          new THREE.Face3( vertex_indices[ 0 ], vertex_indices[ 1 ], vertex_indices[ 3 ] ),
+          new THREE.Face3( vertex_indices[ 1 ], vertex_indices[ 2 ], vertex_indices[ 3 ] )
+        );
+
+      }
+
+    }
+
+  },
+
+  binaryRead: function ( dataview, at, type, little_endian ) {
+
+    switch ( type ) {
+
+      // corespondences for non-specific length types here match rply:
+    case 'int8':    case 'char':   return [ dataview.getInt8( at ), 1 ];
+
+    case 'uint8':   case 'uchar':  return [ dataview.getUint8( at ), 1 ];
+
+    case 'int16':   case 'short':  return [ dataview.getInt16( at, little_endian ), 2 ];
+
+    case 'uint16':  case 'ushort': return [ dataview.getUint16( at, little_endian ), 2 ];
+
+    case 'int32':   case 'int':    return [ dataview.getInt32( at, little_endian ), 4 ];
+
+    case 'uint32':  case 'uint':   return [ dataview.getUint32( at, little_endian ), 4 ];
+
+    case 'float32': case 'float':  return [ dataview.getFloat32( at, little_endian ), 4 ];
+
+    case 'float64': case 'double': return [ dataview.getFloat64( at, little_endian ), 8 ];
+
+    }
+
+  },
+
+  binaryReadElement: function ( dataview, at, properties, little_endian ) {
+
+    var element = Object();
+    var result, read = 0;
+
+    for ( var i = 0; i < properties.length; i ++ ) {
+
+      if ( properties[ i ].type === "list" ) {
+
+        var list = [];
+
+        result = this.binaryRead( dataview, at + read, properties[ i ].countType, little_endian );
+        var n = result[ 0 ];
+        read += result[ 1 ];
+
+        for ( var j = 0; j < n; j ++ ) {
+
+          result = this.binaryRead( dataview, at + read, properties[ i ].itemType, little_endian );
+          list.push( result[ 0 ] );
+          read += result[ 1 ];
+
+        }
+
+        element[ properties[ i ].name ] = list;
+
+      } else {
+
+        result = this.binaryRead( dataview, at + read, properties[ i ].type, little_endian );
+        element[ properties[ i ].name ] = result[ 0 ];
+        read += result[ 1 ];
+
+      }
+
+    }
+
+    return [ element, read ];
+
+  },
+
+  parseBinary: function ( data ) {
+
+    var geometry = new THREE.Geometry();
+
+    var header = this.parseHeader( this.bin2str( data ) );
+    var little_endian = ( header.format === "binary_little_endian" );
+    var body = new DataView( data, header.headerLength );
+    var result, loc = 0;
+
+    for ( var currentElement = 0; currentElement < header.elements.length; currentElement ++ ) {
+
+      for ( var currentElementCount = 0; currentElementCount < header.elements[ currentElement ].count; currentElementCount ++ ) {
+
+        result = this.binaryReadElement( body, loc, header.elements[ currentElement ].properties, little_endian );
+        loc += result[ 1 ];
+        var element = result[ 0 ];
+
+        this.handleElement( geometry, header.elements[ currentElement ].name, element );
+
+      }
+
+    }
+
+    return this.postProcess( geometry );
+
+  }
+
+};
+
+},{}],9:[function(require,module,exports){
+/**
+
+  QuickHull
+  ---------
+
+  The MIT License
+
+  Copyright &copy; 2010-2014 three.js authors
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in
+  all copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+
+  THE SOFTWARE.
+
+
+    @author mark lundin / http://mark-lundin.com
+
+    This is a 3D implementation of the Quick Hull algorithm.
+    It is a fast way of computing a convex hull with average complexity
+    of O(n log(n)).
+    It uses depends on three.js and is supposed to create THREE.Geometry.
+
+    It's also very messy
+
+ */
+
+module.exports = (function(){
+
+
+  var faces     = [],
+    faceStack   = [],
+    i, NUM_POINTS, extremes,
+    max     = 0,
+    dcur, current, j, v0, v1, v2, v3,
+    N, D;
+
+  var ab, ac, ax,
+    suba, subb, normal,
+    diff, subaA, subaB, subC;
+
+  function reset(){
+
+    ab    = new THREE.Vector3(),
+    ac    = new THREE.Vector3(),
+    ax    = new THREE.Vector3(),
+    suba  = new THREE.Vector3(),
+    subb  = new THREE.Vector3(),
+    normal  = new THREE.Vector3(),
+    diff  = new THREE.Vector3(),
+    subaA = new THREE.Vector3(),
+    subaB = new THREE.Vector3(),
+    subC  = new THREE.Vector3();
+
+  }
+
+  //temporary vectors
+
+  function process( points ){
+
+    // Iterate through all the faces and remove
+    while( faceStack.length > 0  ){
+      cull( faceStack.shift(), points );
+    }
+  }
+
+
+  var norm = function(){
+
+    var ca = new THREE.Vector3(),
+      ba = new THREE.Vector3(),
+      N = new THREE.Vector3();
+
+    return function( a, b, c ){
+
+      ca.subVectors( c, a );
+      ba.subVectors( b, a );
+
+      N.crossVectors( ca, ba );
+
+      return N.normalize();
+    }
+
+  }();
+
+
+  function getNormal( face, points ){
+
+    if( face.normal !== undefined ) return face.normal;
+
+    var p0 = points[face[0]],
+      p1 = points[face[1]],
+      p2 = points[face[2]];
+
+    ab.subVectors( p1, p0 );
+    ac.subVectors( p2, p0 );
+    normal.crossVectors( ac, ab );
+    normal.normalize();
+
+    return face.normal = normal.clone();
+
+  }
+
+
+  function assignPoints( face, pointset, points ){
+
+    // ASSIGNING POINTS TO FACE
+    var p0 = points[face[0]],
+      dots = [], apex,
+      norm = getNormal( face, points );
+
+
+    // Sory all the points by there distance from the plane
+    pointset.sort( function( aItem, bItem ){
+
+
+      dots[aItem.x/3] = dots[aItem.x/3] !== undefined ? dots[aItem.x/3] : norm.dot( suba.subVectors( aItem, p0 ));
+      dots[bItem.x/3] = dots[bItem.x/3] !== undefined ? dots[bItem.x/3] : norm.dot( subb.subVectors( bItem, p0 ));
+
+      return dots[aItem.x/3] - dots[bItem.x/3] ;
+    });
+
+    //TODO :: Must be a faster way of finding and index in this array
+    var index = pointset.length;
+
+    if( index === 1 ) dots[pointset[0].x/3] = norm.dot( suba.subVectors( pointset[0], p0 ));
+    while( index-- > 0 && dots[pointset[index].x/3] > 0 )
+
+    var point;
+    if( index + 1 < pointset.length && dots[pointset[index+1].x/3] > 0 ){
+
+      face.visiblePoints  = pointset.splice( index + 1 );
+    }
+  }
+
+
+
+
+  function cull( face, points ){
+
+    var i = faces.length,
+      dot, visibleFace, currentFace,
+      visibleFaces = [face];
+
+    var apex = points.indexOf( face.visiblePoints.pop() );
+
+    // Iterate through all other faces...
+    while( i-- > 0 ){
+      currentFace = faces[i];
+      if( currentFace !== face ){
+        // ...and check if they're pointing in the same direction
+        dot = getNormal( currentFace, points ).dot( diff.subVectors( points[apex], points[currentFace[0]] ));
+        if( dot > 0 ){
+          visibleFaces.push( currentFace );
+        }
+      }
+    }
+
+    var index, neighbouringIndex, vertex;
+
+    // Determine Perimeter - Creates a bounded horizon
+
+    // 1. Pick an edge A out of all possible edges
+    // 2. Check if A is shared by any other face. a->b === b->a
+      // 2.1 for each edge in each triangle, isShared = ( f1.a == f2.a && f1.b == f2.b ) || ( f1.a == f2.b && f1.b == f2.a )
+    // 3. If not shared, then add to convex horizon set,
+        //pick an end point (N) of the current edge A and choose a new edge NA connected to A.
+        //Restart from 1.
+    // 4. If A is shared, it is not an horizon edge, therefore flag both faces that share this edge as candidates for culling
+    // 5. If candidate geometry is a degenrate triangle (ie. the tangent space normal cannot be computed) then remove that triangle from all further processing
+
+
+    var j = i = visibleFaces.length;
+    var isDistinct = false,
+      hasOneVisibleFace = i === 1,
+      cull = [],
+      perimeter = [],
+      edgeIndex = 0, compareFace, nextIndex,
+      a, b;
+
+    var allPoints = [];
+    var originFace = [visibleFaces[0][0], visibleFaces[0][1], visibleFaces[0][1], visibleFaces[0][2], visibleFaces[0][2], visibleFaces[0][0]];
+
+
+    if( visibleFaces.length === 1 ){
+      currentFace = visibleFaces[0];
+
+      perimeter = [currentFace[0], currentFace[1], currentFace[1], currentFace[2], currentFace[2], currentFace[0]];
+      // remove visible face from list of faces
+      if( faceStack.indexOf( currentFace ) > -1 ){
+        faceStack.splice( faceStack.indexOf( currentFace ), 1 );
+      }
+
+
+      if( currentFace.visiblePoints ) allPoints = allPoints.concat( currentFace.visiblePoints );
+      faces.splice( faces.indexOf( currentFace ), 1 );
+
+    }else{
+
+      while( i-- > 0  ){  // for each visible face
+
+        currentFace = visibleFaces[i];
+
+        // remove visible face from list of faces
+        if( faceStack.indexOf( currentFace ) > -1 ){
+          faceStack.splice( faceStack.indexOf( currentFace ), 1 );
+        }
+
+        if( currentFace.visiblePoints ) allPoints = allPoints.concat( currentFace.visiblePoints );
+        faces.splice( faces.indexOf( currentFace ), 1 );
+
+
+        var isSharedEdge;
+        cEdgeIndex = 0;
+
+        while( cEdgeIndex < 3 ){ // Iterate through it's edges
+
+          isSharedEdge = false;
+          j = visibleFaces.length;
+          a = currentFace[cEdgeIndex]
+          b = currentFace[(cEdgeIndex+1)%3];
+
+
+          while( j-- > 0 && !isSharedEdge ){ // find another visible faces
+
+            compareFace = visibleFaces[j];
+            edgeIndex = 0;
+
+            // isSharedEdge = compareFace == currentFace;
+            if( compareFace !== currentFace ){
+
+              while( edgeIndex < 3 && !isSharedEdge ){ //Check all it's indices
+
+                nextIndex = ( edgeIndex + 1 );
+                isSharedEdge = ( compareFace[edgeIndex] === a && compareFace[nextIndex%3] === b ) ||
+                         ( compareFace[edgeIndex] === b && compareFace[nextIndex%3] === a );
+
+                edgeIndex++;
+              }
+            }
+          }
+
+          if( !isSharedEdge || hasOneVisibleFace ){
+            perimeter.push( a );
+            perimeter.push( b );
+          }
+
+          cEdgeIndex++;
+        }
+      }
+    }
+
+    // create new face for all pairs around edge
+    i = 0;
+    var l = perimeter.length/2;
+    var f;
+
+    while( i < l ){
+      f = [ perimeter[i*2+1], apex, perimeter[i*2] ];
+      assignPoints( f, allPoints, points );
+      faces.push( f )
+      if( f.visiblePoints !== undefined  )faceStack.push( f );
+      i++;
+    }
+
+  }
+
+  var distSqPointSegment = function(){
+
+    var ab = new THREE.Vector3(),
+      ac = new THREE.Vector3(),
+      bc = new THREE.Vector3();
+
+    return function( a, b, c ){
+
+        ab.subVectors( b, a );
+        ac.subVectors( c, a );
+        bc.subVectors( c, b );
+
+        var e = ac.dot(ab);
+        if (e < 0.0) return ac.dot( ac );
+        var f = ab.dot( ab );
+        if (e >= f) return bc.dot(  bc );
+        return ac.dot( ac ) - e * e / f;
+
+      }
+
+  }();
+
+
+
+
+
+  return function( geometry ){
+
+    reset();
+
+
+    points    = geometry.vertices;
+    faces     = [],
+    faceStack   = [],
+    i       = NUM_POINTS = points.length,
+    extremes  = points.slice( 0, 6 ),
+    max     = 0;
+
+
+
+    /*
+     *  FIND EXTREMETIES
+     */
+    while( i-- > 0 ){
+      if( points[i].x < extremes[0].x ) extremes[0] = points[i];
+      if( points[i].x > extremes[1].x ) extremes[1] = points[i];
+
+      if( points[i].y < extremes[2].y ) extremes[2] = points[i];
+      if( points[i].y < extremes[3].y ) extremes[3] = points[i];
+
+      if( points[i].z < extremes[4].z ) extremes[4] = points[i];
+      if( points[i].z < extremes[5].z ) extremes[5] = points[i];
+    }
+
+
+    /*
+     *  Find the longest line between the extremeties
+     */
+
+    j = i = 6;
+    while( i-- > 0 ){
+      j = i - 1;
+      while( j-- > 0 ){
+          if( max < (dcur = extremes[i].distanceToSquared( extremes[j] )) ){
+        max = dcur;
+        v0 = extremes[ i ];
+        v1 = extremes[ j ];
+
+          }
+        }
+      }
+
+
+      // 3. Find the most distant point to the line segment, this creates a plane
+      i = 6;
+      max = 0;
+    while( i-- > 0 ){
+      dcur = distSqPointSegment( v0, v1, extremes[i]);
+      if( max < dcur ){
+        max = dcur;
+            v2 = extremes[ i ];
+          }
+    }
+
+
+      // 4. Find the most distant point to the plane.
+
+      N = norm(v0, v1, v2);
+      D = N.dot( v0 );
+
+
+      max = 0;
+      i = NUM_POINTS;
+      while( i-- > 0 ){
+        dcur = Math.abs( points[i].dot( N ) - D );
+          if( max < dcur ){
+            max = dcur;
+            v3 = points[i];
+      }
+      }
+
+
+
+      var v0Index = points.indexOf( v0 ),
+      v1Index = points.indexOf( v1 ),
+      v2Index = points.indexOf( v2 ),
+      v3Index = points.indexOf( v3 );
+
+
+    //  We now have a tetrahedron as the base geometry.
+    //  Now we must subdivide the
+
+      var tetrahedron =[
+        [ v2Index, v1Index, v0Index ],
+        [ v1Index, v3Index, v0Index ],
+        [ v2Index, v3Index, v1Index ],
+        [ v0Index, v3Index, v2Index ],
+    ];
+
+
+
+    subaA.subVectors( v1, v0 ).normalize();
+    subaB.subVectors( v2, v0 ).normalize();
+    subC.subVectors ( v3, v0 ).normalize();
+    var sign  = subC.dot( new THREE.Vector3().crossVectors( subaB, subaA ));
+
+
+    // Reverse the winding if negative sign
+    if( sign < 0 ){
+      tetrahedron[0].reverse();
+      tetrahedron[1].reverse();
+      tetrahedron[2].reverse();
+      tetrahedron[3].reverse();
+    }
+
+
+    //One for each face of the pyramid
+    var pointsCloned = points.slice();
+    pointsCloned.splice( pointsCloned.indexOf( v0 ), 1 );
+    pointsCloned.splice( pointsCloned.indexOf( v1 ), 1 );
+    pointsCloned.splice( pointsCloned.indexOf( v2 ), 1 );
+    pointsCloned.splice( pointsCloned.indexOf( v3 ), 1 );
+
+
+    var i = tetrahedron.length;
+    while( i-- > 0 ){
+      assignPoints( tetrahedron[i], pointsCloned, points );
+      if( tetrahedron[i].visiblePoints !== undefined ){
+        faceStack.push( tetrahedron[i] );
+      }
+      faces.push( tetrahedron[i] );
+    }
+
+    process( points );
+
+
+    //  Assign to our geometry object
+
+    var ll = faces.length;
+    while( ll-- > 0 ){
+      geometry.faces[ll] = new THREE.Face3( faces[ll][2], faces[ll][1], faces[ll][0], faces[ll].normal )
+    }
+
+    geometry.normalsNeedUpdate = true;
+
+    return geometry;
+
+  }
+
+}())
+
+},{}],10:[function(require,module,exports){
 /**
  * Polyfill for the additional KeyboardEvent properties defined in the D3E and
  * D4E draft specifications, by @inexorabletash.
@@ -3711,69 +4953,7 @@ module.exports = GamepadButtonEvent;
 
 } (window));
 
-},{}],8:[function(require,module,exports){
-var CANNON = require('cannon');
-
-/**
- * Given a THREE.Object3D instance, creates a corresponding CANNON shape.
- * @param  {THREE.Object3D} object
- * @return {CANNON.Shape}
- */
-module.exports = function (object) {
-  var mesh, meshes = [];
-  object.traverse(function (object) {
-    if (object.type === 'Mesh') {
-      meshes.push(object);
-    }
-  });
-
-  mesh = meshes[0];
-  if (meshes.length > 1) {
-    console.warn('[object2shape] Found too many objects - returning shape for first first');
-  } else if (meshes.length === 0) {
-    return null;
-  }
-
-  switch (mesh.geometry.type) {
-    case 'BoxGeometry':
-      return createBoxShape(mesh.geometry);
-    case 'PlaneBufferGeometry':
-      return createPlaneShape(mesh.geometry);
-    case 'BufferGeometry':
-      return createTrimeshShape(mesh.geometry);
-    default:
-      console.warn('Unrecognized geometry: "%s". Using bounding box as shape.', mesh.geometry.type);
-      return createBoxShape(mesh.geometry);
-  }
-};
-
-function createPlaneShape (geometry) {
-  geometry.computeBoundingBox();
-  var box = geometry.boundingBox;
-  return new CANNON.Box(new CANNON.Vec3(
-    (box.max.x - box.min.x) / 2 || 0.1,
-    (box.max.y - box.min.y) / 2 || 0.1,
-    (box.max.z - box.min.z) / 2 || 0.1
-  ));
-}
-
-function createBoxShape (geometry) {
-  geometry.computeBoundingBox();
-  var box = geometry.boundingBox;
-  return new CANNON.Box(new CANNON.Vec3(
-    (box.max.x - box.min.x) / 2,
-    (box.max.y - box.min.y) / 2,
-    (box.max.z - box.min.z) / 2
-  ));
-}
-
-function createTrimeshShape (geometry) {
-  var vertices = geometry.attributes.position.array;
-  var indices = Object.keys(vertices).map(Number);
-  return new CANNON.Trimesh(vertices, indices);
-}
-
-},{"cannon":9}],9:[function(require,module,exports){
+},{}],11:[function(require,module,exports){
 (function (global){
 /*
  * Copyright (c) 2015 cannon.js Authors
@@ -17463,7 +18643,7 @@ World.prototype.clearForces = function(){
 (2)
 });
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],10:[function(require,module,exports){
+},{}],12:[function(require,module,exports){
 module.exports = {
   schema: {
     enabled: {
@@ -17580,7 +18760,7 @@ module.exports = {
 
 };
 
-},{}],11:[function(require,module,exports){
+},{}],13:[function(require,module,exports){
 var EPS = 0.1;
 
 module.exports = {
@@ -17646,7 +18826,7 @@ module.exports = {
   }
 };
 
-},{}],12:[function(require,module,exports){
+},{}],14:[function(require,module,exports){
 /**
  * Gamepad controls for A-Frame.
  *
@@ -17902,7 +19082,7 @@ module.exports = {
   }
 };
 
-},{"../../lib/GamepadButton":5,"../../lib/GamepadButtonEvent":6}],13:[function(require,module,exports){
+},{"../../lib/GamepadButton":6,"../../lib/GamepadButtonEvent":7}],15:[function(require,module,exports){
 var TICK_DEBOUNCE = 4; // ms
 
 module.exports = {
@@ -17989,7 +19169,7 @@ module.exports = {
   }
 };
 
-},{}],14:[function(require,module,exports){
+},{}],16:[function(require,module,exports){
 var math = require('../math');
 
 module.exports = {
@@ -18022,7 +19202,7 @@ module.exports = {
   }
 };
 
-},{"../math":22,"./api-controls":10,"./checkpoint-controls":11,"./gamepad-controls":12,"./hmd-controls":13,"./keyboard-controls":15,"./mouse-controls":16,"./touch-controls":17,"./universal-controls":18}],15:[function(require,module,exports){
+},{"../math":25,"./api-controls":12,"./checkpoint-controls":13,"./gamepad-controls":14,"./hmd-controls":15,"./keyboard-controls":17,"./mouse-controls":18,"./touch-controls":19,"./universal-controls":20}],17:[function(require,module,exports){
 require('../../lib/keyboard.polyfill');
 
 var MAX_DELTA = 0.2,
@@ -18173,7 +19353,7 @@ module.exports = {
 
 };
 
-},{"../../lib/keyboard.polyfill":7}],16:[function(require,module,exports){
+},{"../../lib/keyboard.polyfill":10}],18:[function(require,module,exports){
 /**
  * Mouse + Pointerlock controls.
  *
@@ -18320,7 +19500,7 @@ module.exports = {
   }
 };
 
-},{}],17:[function(require,module,exports){
+},{}],19:[function(require,module,exports){
 module.exports = {
   schema: {
     enabled: { default: true },
@@ -18442,7 +19622,7 @@ module.exports = {
   }
 };
 
-},{}],18:[function(require,module,exports){
+},{}],20:[function(require,module,exports){
 /**
  * Universal Controls
  *
@@ -18534,7 +19714,7 @@ module.exports = {
     if (this.data.movementEnabled && dt / 1000 > MAX_DELTA) {
       this.velocity.set(0, 0, 0);
       this.el.setAttribute('velocity', this.velocity);
-    } else if (this.data.movementEnabled) {
+    } else {
       this.updateVelocity(dt);
     }
   },
@@ -18579,18 +19759,20 @@ module.exports = {
     var control, velocity, dVelocity,
         data = this.data;
 
-    for (var i = 0, l = data.movementControls.length; i < l; i++) {
-      control = this.el.components[data.movementControls[i] + COMPONENT_SUFFIX];
-      if (control && control.isVelocityActive()) {
-        if (control.getVelocityDelta) {
-          dVelocity = control.getVelocityDelta(dt);
-        } else if (control.getVelocity) {
-          this.el.setAttribute('velocity', control.getVelocity());
-          return;
-        } else {
-          throw new Error('Incompatible movement controls: ', data.movementControls[i]);
+    if (data.movementEnabled) {
+      for (var i = 0, l = data.movementControls.length; i < l; i++) {
+        control = this.el.components[data.movementControls[i] + COMPONENT_SUFFIX];
+        if (control && control.isVelocityActive()) {
+          if (control.getVelocityDelta) {
+            dVelocity = control.getVelocityDelta(dt);
+          } else if (control.getVelocity) {
+            this.el.setAttribute('velocity', control.getVelocity());
+            return;
+          } else {
+            throw new Error('Incompatible movement controls: ', data.movementControls[i]);
+          }
+          break;
         }
-        break;
       }
     }
 
@@ -18599,7 +19781,7 @@ module.exports = {
     velocity.x -= velocity.x * data.movementEasing * dt / 1000;
     velocity.z -= velocity.z * data.movementEasing * dt / 1000;
 
-    if (dVelocity) {
+    if (dVelocity && data.movementEnabled) {
       // Set acceleration
       if (dVelocity.length() > 1) {
         dVelocity.setLength(this.data.movementAcceleration * dt / 1000);
@@ -18629,7 +19811,7 @@ module.exports = {
   }
 };
 
-},{}],19:[function(require,module,exports){
+},{}],21:[function(require,module,exports){
 /**
  * three-model
  *
@@ -18678,9 +19860,10 @@ module.exports = {
   }
 };
 
-},{"../../lib/FBXLoader":4}],20:[function(require,module,exports){
+},{"../../lib/FBXLoader":5}],22:[function(require,module,exports){
 module.exports = {
   'fbx-model':   require('./fbx-model'),
+  'ply-model': require('./ply-model'),
   'three-model': require('./three-model'),
 
   registerAll: function (AFRAME) {
@@ -18689,13 +19872,56 @@ module.exports = {
     AFRAME = AFRAME || window.AFRAME;
     AFRAME = AFRAME.aframeCore || AFRAME;
     if (!AFRAME.components['fbx-model'])    AFRAME.registerComponent('fbx-model',   this['fbx-model']);
+    if (!AFRAME.components['ply-model'])    AFRAME.registerComponent('ply-model',   this['ply-model']);
     if (!AFRAME.components['three-model'])  AFRAME.registerComponent('three-model', this['three-model']);
 
     this._registered = true;
   }
 };
 
-},{"./fbx-model":19,"./three-model":21}],21:[function(require,module,exports){
+},{"./fbx-model":21,"./ply-model":23,"./three-model":24}],23:[function(require,module,exports){
+/**
+ * ply-model
+ *
+ * Wraps THREE.PLYLoader.
+ */
+THREE.PLYLoader = require('../../lib/PLYLoader');
+
+module.exports = {
+  schema: {src: { type: 'src' }},
+
+  init: function () {
+    this.model = null;
+  },
+
+  update: function () {
+    var loader,
+        data = this.data;
+
+    if (!data.src) return;
+
+    this.remove();
+    loader = new THREE.PLYLoader();
+    loader.load(data.src, this.load.bind(this));
+  },
+
+  load: function (geometry) {
+    this.model = new THREE.Mesh(geometry, new THREE.MeshPhongMaterial({
+      color: 0xFFFFFF,
+      shading: THREE.FlatShading,
+      vertexColors: THREE.VertexColors,
+      shininess: 0
+    }));
+    this.el.setObject3D('mesh', this.model);
+    this.el.emit('model-loaded', {format: 'ply', model: this.model});
+  },
+
+  remove: function () {
+    if (this.model) this.el.removeObject3D('mesh');
+  }
+};
+
+},{"../../lib/PLYLoader":8}],24:[function(require,module,exports){
 /**
  * three-model
  *
@@ -18767,7 +19993,7 @@ module.exports = {
   }
 };
 
-},{}],22:[function(require,module,exports){
+},{}],25:[function(require,module,exports){
 module.exports = {
   'velocity':   require('./velocity'),
   'quaternion': require('./quaternion'),
@@ -18784,7 +20010,7 @@ module.exports = {
   }
 };
 
-},{"./quaternion":23,"./velocity":24}],23:[function(require,module,exports){
+},{"./quaternion":26,"./velocity":27}],26:[function(require,module,exports){
 /**
  * Quaternion.
  *
@@ -18795,13 +20021,13 @@ module.exports = {
  */
 module.exports = {
   schema: {type: 'vec4'},
-  tick: function () {
+  update: function () {
     var data = this.data;
     this.el.object3D.quaternion.set(data.x, data.y, data.z, data.w);
   }
 };
 
-},{}],24:[function(require,module,exports){
+},{}],27:[function(require,module,exports){
 /**
  * Velocity, in m/s.
  */
@@ -18832,8 +20058,10 @@ module.exports = {
     if (isNaN(dt)) return;
 
     var physics = this.el.sceneEl.systems.physics || {options:{maxInterval: 1 / 60}},
-        velocity = this.el.getAttribute('velocity'), // TODO - why not this.el.data?
-        position = this.el.getAttribute('position');
+
+        // TODO - There's definitely a bug with getComputedAttribute and el.data.
+        velocity = this.el.getAttribute('velocity') || {x: 0, y: 0, z: 0},
+        position = this.el.getAttribute('position') || {x: 0, y: 0, z: 0};
 
     dt = Math.min(dt, physics.options.maxInterval * 1000);
 
@@ -18845,7 +20073,7 @@ module.exports = {
   }
 };
 
-},{}],25:[function(require,module,exports){
+},{}],28:[function(require,module,exports){
 module.exports = {
   schema: {
     defaultRotation: {type: 'vec3'},
@@ -18871,7 +20099,7 @@ module.exports = {
   }
 };
 
-},{}],26:[function(require,module,exports){
+},{}],29:[function(require,module,exports){
 var math = require('../math'),
     physics = require('../physics');
 
@@ -18896,7 +20124,7 @@ module.exports = {
   }
 };
 
-},{"../math":22,"../physics":31,"./checkpoint":25,"./jump-ability":27,"./toggle-velocity":28}],27:[function(require,module,exports){
+},{"../math":25,"../physics":34,"./checkpoint":28,"./jump-ability":30,"./toggle-velocity":31}],30:[function(require,module,exports){
 var ACCEL_G = -9.8, // m/s^2
     EASING = -15; // m/s^2
 
@@ -18953,7 +20181,7 @@ module.exports = {
   }
 };
 
-},{}],28:[function(require,module,exports){
+},{}],31:[function(require,module,exports){
 /**
  * Toggle velocity.
  *
@@ -18990,9 +20218,9 @@ module.exports = {
   },
 };
 
-},{}],29:[function(require,module,exports){
+},{}],32:[function(require,module,exports){
 var CANNON = require('cannon'),
-    object2shape = require('../../lib/object2shape');
+    mesh2shape = require('../../lib/CANNON-mesh2shape');
 
 require('../../lib/CANNON-shape2mesh');
 
@@ -19005,16 +20233,37 @@ module.exports = {
 
   initBody: function () {
     this.system = this.el.sceneEl.systems.physics;
-    this.system.addBehavior(this, this.system.Phase.SIMULATE);
 
-    var shape = object2shape(this.el.object3D);
+    var shape, options;
+
+    if (this.data.shape !== 'auto') {
+      options = {
+        type: mesh2shape.Type[this.data.shape.toUpperCase()]
+      };
+    }
+
+    // TODO - This is pretty obtuse. There really ought to be a clean way to
+    // delay component initialization until the scene and all of its components
+    // have been taken care of.
+    shape = mesh2shape(this.el.object3D, options);
     if (shape && this.el.sceneEl.hasLoaded) {
       this.initBody_(shape);
     } else if (shape && !this.el.sceneEl.hasLoaded) {
       this.el.sceneEl.addEventListener('loaded', this.initBody_.bind(this, shape));
+    } else if (!this.el.sceneEl.hasLoaded) {
+      this.el.sceneEl.addEventListener('loaded', function () {
+        shape = mesh2shape(this.el.object3D, options);
+        if (shape) {
+          this.initBody_(shape);
+        } else {
+          this.el.addEventListener('model-loaded', function (e) {
+            this.initBody_(mesh2shape(e.detail.model, options));
+          }.bind(this));
+        }
+      }.bind(this));
     } else {
       this.el.addEventListener('model-loaded', function (e) {
-        this.initBody_(object2shape(e.detail.model));
+        this.initBody_(mesh2shape(e.detail.model, options));
       }.bind(this));
     }
   },
@@ -19039,13 +20288,13 @@ module.exports = {
     }
 
     this.body = new CANNON.Body({
-      shape: shape,
       mass: data.mass || 0,
       material: this.system.material,
       position: new CANNON.Vec3(pos.x, pos.y, pos.z),
       linearDamping: data.linearDamping,
       angularDamping: data.angularDamping
     });
+    this.body.addShape(shape, shape.offset, shape.orientation);
 
     // Apply rotation
     var rot = el.getAttribute('rotation') || {x: 0, y: 0, z: 0};
@@ -19058,32 +20307,106 @@ module.exports = {
 
     // Show wireframe
     if (this.system.options.debug) {
-      var mesh = CANNON.shape2mesh(this.body).children[0];
-      this.wireframe = new THREE.EdgesHelper(mesh, 0xff0000);
-      this.syncWireframe();
-      this.el.sceneEl.object3D.add(this.wireframe);
+      this.createWireframe(this.body, shape);
     }
 
+    this.el.body = this.body;
     this.body.el = this.el;
-    this.system.addBody(this.body);
-    console.info('[%s] loaded', this.name);
+    this.loaded = true;
+    this.play();
+
+    this.el.emit('body-loaded', {body: this.el.body});
   },
 
-  remove: function () {
+  play: function () {
+    if (!this.loaded) return;
+
+    this.system.addBehavior(this, this.system.Phase.SIMULATE);
+    this.system.addBody(this.body);
+    if (this.wireframe) this.el.sceneEl.object3D.add(this.wireframe);
+
+    this.syncToPhysics();
+  },
+
+  pause: function () {
+    if (!this.loaded) return;
+
     this.system.removeBehavior(this, this.system.Phase.SIMULATE);
-    if (this.body) this.system.removeBody(this.body);
+    this.system.removeBody(this.body);
     if (this.wireframe) this.el.sceneEl.object3D.remove(this.wireframe);
   },
 
+  remove: function () {
+    this.pause();
+    delete this.body.el;
+    delete this.body;
+    delete this.el.body;
+    delete this.wireframe;
+  },
+
+  createWireframe: function (body, shape) {
+    var offset = shape.offset,
+        orientation = shape.orientation,
+        mesh = CANNON.shape2mesh(body).children[0];
+    this.wireframe = new THREE.EdgesHelper(mesh, 0xff0000);
+
+    if (offset) {
+      this.wireframe.offset = offset.clone();
+    }
+
+    if (orientation) {
+      orientation.inverse(orientation);
+      this.wireframe.orientation = new THREE.Quaternion(
+        orientation.x,
+        orientation.y,
+        orientation.z,
+        orientation.w
+      );
+    }
+
+    this.syncWireframe();
+  },
+
   syncWireframe: function () {
+    var offset,
+        wireframe = this.wireframe;
+
     if (!this.wireframe) return;
-    this.wireframe.quaternion.copy(this.body.quaternion);
-    this.wireframe.position.copy(this.body.position);
-    this.wireframe.updateMatrix();
+
+    // Apply rotation. If the shape required custom orientation, also apply
+    // that on the wireframe.
+    wireframe.quaternion.copy(this.body.quaternion);
+    if (wireframe.orientation) {
+      wireframe.quaternion.multiply(wireframe.orientation);
+    }
+
+    // Apply position. If the shape required custom offset, also apply that on
+    // the wireframe.
+    wireframe.position.copy(this.body.position);
+    if (wireframe.offset) {
+      offset = wireframe.offset.clone().applyQuaternion(wireframe.quaternion);
+      wireframe.position.add(offset);
+    }
+
+    wireframe.updateMatrix();
+  },
+
+  syncToPhysics: function () {
+    if (!this.body) return;
+    if (this.el.components.velocity) this.body.velocity.copy(this.el.getAttribute('velocity'));
+    if (this.el.components.position) this.body.position.copy(this.el.getAttribute('position'));
+    if (this.wireframe) this.syncWireframe();
+  },
+
+  syncFromPhysics: function () {
+    if (!this.body) return;
+    this.el.setAttribute('quaternion', this.body.quaternion);
+    this.el.setAttribute('position', this.body.position);
+    if (this.wireframe) this.syncWireframe();
   }
 };
 
-},{"../../lib/CANNON-shape2mesh":3,"../../lib/object2shape":8,"cannon":9}],30:[function(require,module,exports){
+},{"../../lib/CANNON-mesh2shape":3,"../../lib/CANNON-shape2mesh":4,"cannon":11}],33:[function(require,module,exports){
 var Body = require('./body');
 
 /**
@@ -19097,19 +20420,18 @@ module.exports = AFRAME.utils.extend({}, Body, {
   schema: {
     mass:           { default: 5 },
     linearDamping:  { default: 0.01 },
-    angularDamping: { default: 0.01 }
+    angularDamping: { default: 0.01 },
+    shape: {default: 'auto', oneOf: ['auto', 'box', 'hull']}
   },
 
   step: function () {
-    if (!this.body) return;
-    this.el.setAttribute('quaternion', this.body.quaternion);
-    this.el.setAttribute('position', this.body.position);
-    if (this.wireframe) this.syncWireframe();
+    this.syncFromPhysics();
   }
 });
 
-},{"./body":29}],31:[function(require,module,exports){
-var math = require('../math');
+},{"./body":32}],34:[function(require,module,exports){
+var CANNON = require('cannon'),
+    math = require('../math');
 
 module.exports = {
   'physics':        require('./physics'),
@@ -19137,7 +20459,10 @@ module.exports = {
   }
 };
 
-},{"../math":22,"./dynamic-body":30,"./kinematic-body":32,"./physics":33,"./static-body":34,"./system/physics":35}],32:[function(require,module,exports){
+// Export CANNON.js.
+window.CANNON = window.CANNON || CANNON;
+
+},{"../math":25,"./dynamic-body":33,"./kinematic-body":35,"./physics":36,"./static-body":37,"./system/physics":38,"cannon":11}],35:[function(require,module,exports){
 /**
  * Kinematic body.
  *
@@ -19169,7 +20494,8 @@ module.exports = {
     mass:           { default: 5 },
     radius:         { default: 1.3 },
     height:         { default: 1.764 },
-    linearDamping:  { default: 0.05 }
+    linearDamping:  { default: 0.05 },
+    enableSlopes:   { default: true }
   },
 
   /*******************************************************************
@@ -19194,8 +20520,8 @@ module.exports = {
     });
     this.body.position.y -= (data.height - data.radius); // TODO - Simplify.
 
+    this.body.el = this.el;
     this.system.addBody(this.body);
-    console.info('[kinematic-body] loaded');
   },
 
   remove: function () {
@@ -19273,6 +20599,12 @@ module.exports = {
 
       normalizedVelocity.copy(velocity).normalize();
       if (groundBody && normalizedVelocity.y < 0.5) {
+        if (!data.enableSlopes) {
+          groundNormal.set(0, 1, 0);
+        } else if (groundNormal.y < 1 - EPS) {
+          groundNormal = this.raycastToGround(groundBody, groundNormal);
+        }
+
         // 4. Project trajectory onto the top-most ground object, unless
         // trajectory is > 45º.
         velocity = velocity.projectOnPlane(groundNormal);
@@ -19298,17 +20630,41 @@ module.exports = {
       body.velocity.copy(velocity);
       this.el.setAttribute('velocity', velocity);
     };
-  }())
+  }()),
+
+  /**
+   * When walking on complex surfaces (trimeshes, borders between two shapes),
+   * the collision normals returned for the player sphere can be very
+   * inconsistent. To address this, raycast straight down, find the collision
+   * normal, and return whichever normal is more vertical.
+   * @param  {CANNON.Body} groundBody
+   * @param  {CANNON.Vec3} groundNormal
+   * @return {CANNON.Vec3}
+   */
+  raycastToGround: function (groundBody, groundNormal) {
+    var ray,
+        hitNormal,
+        vFrom = this.body.position,
+        vTo = this.body.position.clone();
+
+    vTo.y -= this.data.height;
+    ray = new CANNON.Ray(vFrom, vTo);
+    ray._updateDirection(); // TODO - Report bug.
+    ray.intersectBody(groundBody);
+
+    if (!ray.hasHit) return groundNormal;
+
+    // Compare ABS, in case we're projecting against the inside of the face.
+    hitNormal = ray.result.hitNormalWorld;
+    return Math.abs(hitNormal.y) > Math.abs(groundNormal.y) ? hitNormal : groundNormal;
+  }
 };
 
-},{"cannon":9}],33:[function(require,module,exports){
+},{"cannon":11}],36:[function(require,module,exports){
 
 
 module.exports = {
   schema: {
-    friction:     { default: 0.01 },
-    restitution:  { default: 0.3 },
-    iterations:   { default: 5 },
     gravity:      { default: -9.8 },
 
     // Never step more than four frames at once. Effectively pauses the scene
@@ -19316,7 +20672,7 @@ module.exports = {
     maxInterval:      { default: 4 / 60 },
 
     // If true, show wireframes around physics bodies.
-    debug:        { default: false }
+    debug:        { default: false },
   },
 
   update: function (previousData) {
@@ -19329,7 +20685,7 @@ module.exports = {
   }
 };
 
-},{}],34:[function(require,module,exports){
+},{}],37:[function(require,module,exports){
 var Body = require('./body');
 
 /**
@@ -19339,15 +20695,15 @@ var Body = require('./body');
  * other objects may collide with it.
  */
 module.exports = AFRAME.utils.extend({}, Body, {
+  schema: {
+    shape: {default: 'auto', oneOf: ['auto', 'box', 'hull']}
+  },
   step: function () {
-    if (!this.body) return;
-    if (this.el.components.velocity) this.body.velocity.copy(this.el.getAttribute('velocity'));
-    if (this.el.components.position) this.body.position.copy(this.el.getAttribute('position'));
-    if (this.wireframe) this.syncWireframe();
+    this.syncToPhysics();
   }
 });
 
-},{"./body":29}],35:[function(require,module,exports){
+},{"./body":32}],38:[function(require,module,exports){
 var CANNON = require('cannon');
 
 var OPTIONS = {
@@ -19377,12 +20733,17 @@ module.exports = {
     RENDER:   'render'
   },
 
+  /**
+   * Initializes the physics system.
+   */
   init: function () {
     this.options = AFRAME.utils.extend({}, OPTIONS);
 
     this.children = {};
     this.children[this.Phase.SIMULATE] = [];
     this.children[this.Phase.RENDER] = [];
+
+    this.listeners = {};
 
     this.world = new CANNON.World();
     this.world.quatNormalizeSkip = 0;
@@ -19400,23 +20761,14 @@ module.exports = {
     this.world.addContactMaterial(this.contactMaterial);
   },
 
-  setOption: function (opt, value) {
-    this.options[opt] = value;
-    switch (opt) {
-      case 'maxInterval':
-        break; // no-op
-      case 'friction':
-      case 'restitution':
-      case 'iterations':
-      case 'gravity':
-      case 'debug':
-        console.warn('Option "%s" cannot yet be dynamically updated.', opt);
-        break;
-      default:
-        console.error('Option "%s" not recognized.', opt);
-    }
-  },
-
+  /**
+   * Updates the physics world on each tick of the A-Frame scene. It would be
+   * entirely possible to separate the two – updating physics more or less
+   * frequently than the scene – if greater precision or performance were
+   * necessary.
+   * @param  {number} t
+   * @param  {number} dt
+   */
   tick: function (t, dt) {
     if (isNaN(dt)) return;
 
@@ -19432,24 +20784,78 @@ module.exports = {
     }
   },
 
+  /**
+   * Adds a body to the scene, and binds collision events to the element.
+   * @param {CANNON.Body} body
+   */
   addBody: function (body) {
+    this.listeners[body.id] = function (e) { body.el.emit('collide', e); };
+    body.addEventListener('collide', this.listeners[body.id]);
     this.world.addBody(body);
   },
 
+  /**
+   * Removes a body, and its listeners, from the scene.
+   * @param {CANNON.Body} body
+   */
   removeBody: function (body) {
+    body.removeEventListener('collide', this.listeners[body.id]);
+    delete this.listeners[body.id];
     this.world.removeBody(body);
   },
 
+  /**
+   * Adds a component instance to the system, to be invoked on each tick during
+   * the given phase.
+   * @param {Component} component
+   * @param {string} phase
+   */
   addBehavior: function (component, phase) {
     this.children[phase].push(component);
   },
 
+  /**
+   * Removes a component instance from the system.
+   * @param {Component} component
+   * @param {string} phase
+   */
   removeBehavior: function (component, phase) {
     this.children[phase].splice(this.children[phase].indexOf(component), 1);
+  },
+
+  /**
+   * Sets an option on the physics system, affecting future simulation steps.
+   * @param {string} opt
+   * @param {mixed} value
+   */
+  setOption: function (opt, value) {
+    if (this.options[opt] === value) return;
+
+    switch (opt) {
+      case 'maxInterval': return this.setMaxInterval(value);
+      case 'gravity':     return this.setGravity(value);
+      case 'debug':       return this.setDebug(value);
+      default:
+        console.error('Option "%s" not recognized.', opt);
+    }
+  },
+
+  setMaxInterval: function (maxInterval) {
+    this.options.maxInterval = maxInterval;
+  },
+
+  setGravity: function (gravity) {
+    this.options.gravity = gravity;
+    this.world.gravity.y = gravity;
+  },
+
+  setDebug: function (debug) {
+    this.options.debug = debug;
+    console.warn('[physics] Option "debug" cannot be dynamically updated yet');
   }
 };
 
-},{"cannon":9}],36:[function(require,module,exports){
+},{"cannon":11}],39:[function(require,module,exports){
 /**
  * Flat grid.
  *
@@ -19475,22 +20881,187 @@ module.exports = {
   }
 };
 
-},{}],37:[function(require,module,exports){
+},{}],40:[function(require,module,exports){
+/**
+ * Flat-shaded ocean primitive.
+ *
+ * Based on a Codrops tutorial:
+ * http://tympanus.net/codrops/2016/04/26/the-aviator-animating-basic-3d-scene-threejs/
+ */
+module.exports.Primitive = {
+  defaultAttributes: {
+    ocean: {},
+    rotation: {x: -90, y: 0, z: 0}
+  },
+  mappings: {
+    width: 'ocean.width',
+    depth: 'ocean.depth',
+    density: 'ocean.density',
+    color: 'ocean.color',
+    opacity: 'ocean.opacity'
+  }
+};
+
+module.exports.Component = {
+  schema: {
+    // Dimensions of the ocean area.
+    width: {default: 10, min: 0},
+    depth: {default: 10, min: 0},
+
+    // Density of waves.
+    density: {default: 10},
+
+    // Wave amplitude and variance.
+    amplitude: {default: 0.1},
+    amplitudeVariance: {default: 0.3},
+
+    // Wave speed and variance.
+    speed: {default: 1},
+    speedVariance: {default: 2},
+
+    // Material.
+    color: {default: 0x7AD2F7},
+    opacity: {default: 0.8}
+  },
+
+  init: function () {
+    var el = this.el,
+        data = this.data,
+        material = el.components.material;
+
+    var geometry = new THREE.PlaneGeometry(data.width, data.depth, data.density, data.density);
+    geometry.mergeVertices();
+    this.waves = [];
+    for (var v, i = 0, l = geometry.vertices.length; i < l; i++) {
+      v = geometry.vertices[i];
+      this.waves.push({
+        z: v.z,
+        ang: Math.random() * Math.PI * 2,
+        amp: data.amplitude + Math.random() * data.amplitudeVariance,
+        speed: (data.speed + Math.random() * data.speedVariance) / 1000 // radians / frame
+      });
+    }
+
+    if (!material) {
+      material = {};
+      material.material = new THREE.MeshPhongMaterial({
+        color: data.color,
+        transparent: data.opacity < 1,
+        opacity: data.opacity,
+        shading: THREE.FlatShading,
+      });
+    }
+
+    this.mesh = new THREE.Mesh(geometry, material.material);
+    el.object3D.add(this.mesh);
+  },
+
+  remove: function () {
+    this.el.object3D.remove(this.mesh);
+  },
+
+  tick: function (t, dt) {
+    if (isNaN(dt)) return;
+
+    var verts = this.mesh.geometry.vertices;
+    for (var v, vprops, i = 0; (v = verts[i]); i++){
+      vprops = this.waves[i];
+      v.z = vprops.z + Math.sin(vprops.ang) * vprops.amp;
+      vprops.ang += vprops.speed * dt;
+    }
+    this.mesh.geometry.verticesNeedUpdate = true;
+  }
+};
+
+},{}],41:[function(require,module,exports){
+/**
+ * Tube following a custom path.
+ *
+ * Usage:
+ *
+ * ```html
+ * <a-tube path="5 0 5, 5 0 -5, -5 0 -5" radius="0.5"></a-tube>
+ * ```
+ */
+module.exports.Primitive = {
+  defaultAttributes: {
+    tube:           {},
+  },
+  mappings: {
+    path:           'tube.path',
+    segments:       'tube.segments',
+    radius:         'tube.radius',
+    radialSegments: 'tube.radialSegments',
+    closed:         'tube.closed'
+  }
+};
+
+module.exports.Component = {
+  schema: {
+    path:           {default: []},
+    segments:       {default: 64},
+    radius:         {default: 1},
+    radialSegments: {default: 8},
+    closed:         {default: false}
+  },
+
+  init: function () {
+    var el = this.el,
+        data = this.data,
+        material = el.components.material;
+
+    if (!data.path.length) {
+      console.error('[a-tube] `path` property expected but not found.');
+      return;
+    }
+
+    var curve = new THREE.CatmullRomCurve3(data.path.map(function (point) {
+      point = point.split(' ');
+      return new THREE.Vector3(Number(point[0]), Number(point[1]), Number(point[2]));
+    }));
+    var geometry = new THREE.TubeGeometry(
+      curve, data.segments, data.radius, data.radialSegments, data.closed
+    );
+
+    if (!material) {
+      material = {};
+      material.material = new THREE.MeshPhongMaterial();
+    }
+
+    this.mesh = new THREE.Mesh(geometry, material.material);
+    this.el.setObject3D('mesh', this.mesh);
+  },
+
+  remove: function () {
+    if (this.mesh) this.el.removeObject3D('mesh');
+  }
+};
+
+},{}],42:[function(require,module,exports){
 module.exports = {
   'a-grid':        require('./a-grid'),
+  'a-ocean':        require('./a-ocean'),
+  'a-tube':        require('./a-tube'),
 
   registerAll: function (AFRAME) {
     if (this._registered) return;
 
     AFRAME = AFRAME || window.AFRAME;
     AFRAME = AFRAME.aframeCore || AFRAME;
-    AFRAME.registerPrimitive('a-grid', this['a-grid']);
+
+    AFRAME.registerPrimitive('a-grid',  this['a-grid']);
+
+    AFRAME.registerComponent('ocean', this['a-ocean'].Component);
+    AFRAME.registerPrimitive('a-ocean', this['a-ocean'].Primitive);
+
+    AFRAME.registerComponent('tube', this['a-tube'].Component);
+    AFRAME.registerPrimitive('a-tube', this['a-tube'].Primitive);
 
     this._registered = true;
   }
 };
 
-},{"./a-grid":36}],38:[function(require,module,exports){
+},{"./a-grid":39,"./a-ocean":40,"./a-tube":41}],43:[function(require,module,exports){
 module.exports = {
   'shadow':       require('./shadow'),
   'shadow-light': require('./shadow-light'),
@@ -19507,7 +21078,7 @@ module.exports = {
   }
 };
 
-},{"./shadow":40,"./shadow-light":39}],39:[function(require,module,exports){
+},{"./shadow":45,"./shadow-light":44}],44:[function(require,module,exports){
 /**
  * Light component.
  *
@@ -19648,7 +21219,7 @@ module.exports = {
   }
 };
 
-},{}],40:[function(require,module,exports){
+},{}],45:[function(require,module,exports){
 /**
  * Shadow component.
  *
