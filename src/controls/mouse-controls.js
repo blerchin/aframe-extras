@@ -91,6 +91,12 @@ module.exports = {
     if(this.data.lockAxis === 'y'){
       dRotation.setY(0);
     }
+		if(this.data.lockAxis === 'xy' ||
+			 this.data.lockAxis === 'yx'){
+      dRotation.setX(0);
+      dRotation.setY(0);
+		}
+
     this.lookVector.set(0, 0);
     return dRotation;
   },
