@@ -19420,7 +19420,7 @@ module.exports = {
   },
 
   removeEventListeners: function () {
-    var canvasEl = this.el.sceneEl && this.sceneEl.canvas;
+    var canvasEl = this.el.sceneEl && this.el.sceneEl.canvas;
     if (canvasEl) {
       canvasEl.removeEventListener('mousedown', this.onMouseDown, false);
       canvasEl.removeEventListener('mousemove', this.onMouseMove, false);
@@ -19447,6 +19447,12 @@ module.exports = {
     if(this.data.lockAxis === 'y'){
       dRotation.setY(0);
     }
+		if(this.data.lockAxis === 'xy' ||
+			 this.data.lockAxis === 'yx'){
+      dRotation.setX(0);
+      dRotation.setY(0);
+		}
+
     this.lookVector.set(0, 0);
     return dRotation;
   },
@@ -19578,6 +19584,11 @@ module.exports = {
     if(this.data.lockAxis === 'y'){
       dRotation.setY(0);
     }
+		if(this.data.lockAxis === 'xy' ||
+			 this.data.lockAxis === 'yx'){
+      dRotation.setX(0);
+      dRotation.setY(0);
+		}
     this.lookVector.set(0, 0);
     return dRotation;
   },
